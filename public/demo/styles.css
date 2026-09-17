@@ -1,22 +1,20 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
-
 :root {
   color-scheme: light;
-  --ink: #10201d;
-  --muted: #71807b;
-  --paper: #f4f7f2;
-  --panel: rgba(255, 255, 255, .88);
-  --line: #dfe8e2;
-  --green: #2ad696;
-  --green-dark: #087c5a;
-  --navy: #081513;
-  --yellow: #f4c75f;
-  --red: #d75b5b;
-  --shadow: 0 18px 55px rgba(33, 66, 55, .10);
+  --ink: #0f172a;
+  --muted: #64748b;
+  --paper: #f8fafc;
+  --panel: #ffffff;
+  --line: #e2e8f0;
+  --green: #2563eb;
+  --green-dark: #1d4ed8;
+  --navy: #1d4ed8;
+  --yellow: #f59e0b;
+  --red: #be123c;
+  --shadow: 0 8px 24px rgba(15, 23, 42, .06);
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; background: var(--paper); color: var(--ink); font-family: "DM Sans", system-ui, sans-serif; overflow-x: hidden; }
+body { margin: 0; min-height: 100vh; background: var(--paper); color: var(--ink); font-family: Inter, "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow-x: hidden; }
 button, select { font: inherit; }
 button { color: inherit; }
 .ambient { position: fixed; border-radius: 50%; filter: blur(80px); pointer-events: none; opacity: .45; }
@@ -87,3 +85,45 @@ h1, h2, h3, p { margin-top: 0; }
 @keyframes pulse{50%{box-shadow:0 0 0 9px rgba(239,110,110,0)}}@keyframes float{50%{transform:translateY(-7px)}}@keyframes scan{from{top:4px}to{top:144px}}@keyframes modalIn{from{opacity:0;transform:scale(.96) translateY(8px)}}
 @media (max-width:760px){.app-shell{width:min(100% - 24px,600px)}.topbar{height:68px}.screen{padding:25px 0 45px}.secure-chip{display:none}.hero-copy{margin:30px 0}.hero-copy h1{font-size:46px}.hero-copy p{font-size:15px}.role-grid,.teacher-grid,.metrics,.subject-grid{grid-template-columns:1fr}.role-card{padding:20px}.trust-row{flex-wrap:wrap}.page-heading{align-items:start}.page-heading .ghost-button{padding:8px 10px}.metrics{grid-template-columns:1fr 1fr}.metric-card:first-child{grid-column:1/-1}.metric-card{min-height:120px}.schedule-panel{display:none}.panel{padding:18px}.timer-options{grid-template-columns:repeat(4,1fr)}.live-header{align-items:start}.live-summary{gap:16px;flex-wrap:wrap}.session-actions{width:100%;margin:0}.session-actions button{flex:1}.roster-list{grid-template-columns:1fr}.attendance-ring-card{grid-template-columns:110px 1fr;gap:18px;padding:20px}.ring{width:100px;height:100px}.attendance-ring-card h2{font-size:21px}.bubble-stage{height:300px}.class-bubble{width:170px;height:170px}.report-row{grid-template-columns:38px 1fr 45px}.report-row .percent-bar{display:none}}
 @media (max-width:440px){.hero-copy h1{font-size:40px}.metrics{grid-template-columns:1fr}.metric-card:first-child{grid-column:auto}.attendance-ring-card{grid-template-columns:1fr;text-align:center}.ring{margin:auto}.bluetooth-pill{font-size:9px}.panel-title h2{font-size:21px}.class-bubble{width:158px;height:158px}.bubble-stage{height:275px}}
+
+/* Minimal blue system shared with the production dashboard. */
+.ambient { display: none; }
+.topbar { border-bottom: 1px solid var(--line); }
+.brand, .hero-copy h1, .page-heading h1, .panel-title h2, .live-session h2,
+.metric-card strong, .countdown strong, .live-summary strong, .roster-heading h3,
+.ring strong, .attendance-ring-card h2, .class-bubble strong, .subject-card b,
+.success-card h2, .manual-card h2 { font-family: inherit; }
+.brand-mark { background: var(--green); border-radius: 9px; }
+.brand-mark i { background: white; }
+.avatar-button { border: 1px solid #bfdbfe; border-radius: 10px; background: #eff6ff; color: var(--green-dark); }
+.secure-chip, .room-pill, .warning-pill, .bluetooth-pill { background: white; }
+.live-dot, .scanning-dot { background: var(--green); box-shadow: 0 0 0 4px rgba(37,99,235,.1); }
+.role-card, .panel, .metric-card, .subject-card { border-radius: 16px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+.role-card:hover { transform: translateY(-1px); border-color: #bfdbfe; }
+.teacher-card, .metric-card.dark, .attendance-ring-card { border-color: var(--green); background: var(--green); }
+.role-icon { border-radius: 12px; background: white; color: var(--green-dark); }
+.student-card .role-icon, .room-pill, .beacon-status, .bluetooth-pill,
+.student-avatar, .student-avatar.blue, .subject-card > span { background: #eff6ff; color: var(--green-dark); }
+.student-avatar.coral, .student-avatar.violet { background: #eff6ff; color: var(--green-dark); }
+.ghost-button, .danger-button, .timer-options button, .manual-card select { border-radius: 9px; background: white; }
+.timer-options button.selected { border-color: var(--green); background: var(--green); }
+.primary-button { border-radius: 10px; background: var(--green); color: white; }
+.primary-button:hover { filter: none; background: var(--green-dark); }
+.broadcast-small { background: white; box-shadow: 0 0 0 4px rgba(255,255,255,.22); }
+.beacon-glyph { border-radius: 10px; background: var(--green); }
+.beacon-glyph i { background: white; }
+.class-meta span { background: #f1f5f9; }
+.progress-track, .percent-bar { background: #e2e8f0; }
+.attendance-ring-card::after { background: rgba(255,255,255,.08); }
+.ring { background: conic-gradient(white calc(var(--value)*1%), rgba(255,255,255,.22) 0); }
+.ring::before { background: var(--green); }
+.ring span, .attendance-ring-card p { color: #dbeafe; }
+.class-bubble { background: var(--green); box-shadow: 0 18px 42px rgba(37,99,235,.22), 0 0 0 12px rgba(37,99,235,.07), 0 0 0 27px rgba(37,99,235,.03); }
+.orbit { border-color: #bfdbfe; }
+.faint-bubble { background: #eff6ff; }
+.modal-backdrop { background: rgba(15,23,42,.56); backdrop-filter: blur(6px); }
+.scanner-modal, .success-card, .manual-card { border-radius: 16px; box-shadow: 0 24px 70px rgba(15,23,42,.18); }
+.camera-preview { border-radius: 14px; background: #0f172a; }
+.scanner-top button, .modal-close { border: 1px solid var(--line); border-radius: 9px; background: #f8fafc; }
+.success-check { background: var(--green); color: white; box-shadow: 0 0 0 10px rgba(37,99,235,.09); }
+.toast { border-radius: 10px; background: #172554; }

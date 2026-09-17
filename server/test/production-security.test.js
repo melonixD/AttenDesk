@@ -48,8 +48,12 @@ test("production UI includes resilient loading and accessibility states", async 
   assert.match(webApp, /function setButtonBusy/);
   assert.match(styles, /prefers-reduced-motion/);
   assert.match(styles, /\.skeleton-metrics/);
+  assert.match(styles, /--primary: #2563eb/);
+  assert.doesNotMatch(styles, /#2ad696/i);
   assert.match(html, /aria-live="polite"/);
+  assert.match(html, /name="theme-color" content="#2563eb"/);
   assert.match(android, /private fun loadingPanel/);
+  assert.match(android, /0xFF2563EB/);
 });
 
 test("Vercel has a root Express export and CDN-ready public assets", async () => {

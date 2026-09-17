@@ -389,8 +389,8 @@ class MainActivity : Activity() {
                 addView(label("YOUR ATTENDANCE", 10, GREEN, true))
                 addView(label("${formatPercent(dashboard.overallPercentage)}% overall", 31, Color.WHITE, true).withMargins(top = 8))
                 val summary = if (dashboard.conducted == 0) "No classes have been conducted yet." else if (onTrack) "You're on track. Keep attending to stay above ${formatPercent(dashboard.threshold)}%." else "Your attendance is below the required ${formatPercent(dashboard.threshold)}%."
-                addView(label(summary, 13, Color.rgb(157, 176, 170)).withMargins(top = 4))
-                addView(label("${dashboard.attended} attended · ${dashboard.conducted} conducted · ${dashboard.branch} ${dashboard.section}", 11, Color.rgb(157, 176, 170)).withMargins(top = 8))
+                addView(label(summary, 13, Color.rgb(219, 234, 254)).withMargins(top = 4))
+                addView(label("${dashboard.attended} attended · ${dashboard.conducted} conducted · ${dashboard.branch} ${dashboard.section}", 11, Color.rgb(219, 234, 254)).withMargins(top = 8))
             })
             val nearbyCard = card().apply {
                 tag = "nearby-card"
@@ -503,7 +503,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(dp(25), dp(80), dp(25), dp(80))
             addView(label("ATTENDESK · VERIFIED", 10, GREEN_DARK, true).apply { gravity = Gravity.CENTER })
-            addView(label("✓", 40, DARK, true).apply { gravity = Gravity.CENTER; background = shape(GREEN, 60); setPadding(0, dp(13), 0, 0) }, LinearLayout.LayoutParams(dp(72), dp(72)).apply { gravity = Gravity.CENTER })
+            addView(label("✓", 40, Color.WHITE, true).apply { gravity = Gravity.CENTER; background = shape(GREEN, 60); setPadding(0, dp(13), 0, 0) }, LinearLayout.LayoutParams(dp(72), dp(72)).apply { gravity = Gravity.CENTER })
             addView(label(title, 29, INK, true).apply { gravity = Gravity.CENTER }.withMargins(top = 13))
             addView(label(message, 14, MUTED).apply { gravity = Gravity.CENTER })
             addView(primaryButton("Done") { done() }.withMargins(top = 15))
@@ -561,13 +561,13 @@ class MainActivity : Activity() {
         gravity = Gravity.START or Gravity.CENTER_VERTICAL
         setPadding(dp(20), dp(8), dp(20), dp(8))
         setTextColor(if (dark) Color.WHITE else INK)
-        background = shape(if (dark) DARK else Color.WHITE, 22, if (dark) DARK else LINE)
+        background = shape(if (dark) DARK else Color.WHITE, 14, if (dark) DARK else LINE)
         setOnClickListener { click() }
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(92))
     }
 
     private fun infoStrip(title: String, subtitle: String) = column(2).apply {
-        background = shape(PALE_GREEN, 15)
+        background = shape(PALE_GREEN, 12)
         setPadding(dp(15), dp(13), dp(15), dp(13))
         addView(label(title, 13, GREEN_DARK, true))
         addView(label(subtitle, 10, MUTED))
@@ -578,8 +578,8 @@ class MainActivity : Activity() {
         textSize = 14f
         isAllCaps = false
         typeface = Typeface.DEFAULT_BOLD
-        setTextColor(DARK)
-        background = shape(GREEN, 14)
+        setTextColor(Color.WHITE)
+        background = shape(GREEN, 12)
         setOnClickListener { click() }
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52))
     }
@@ -588,8 +588,8 @@ class MainActivity : Activity() {
         this.text = text
         textSize = 13f
         isAllCaps = false
-        setTextColor(Color.rgb(190, 70, 70))
-        background = shape(Color.WHITE, 14, Color.rgb(239, 202, 202))
+        setTextColor(GREEN_DARK)
+        background = shape(Color.WHITE, 12, LINE)
         setOnClickListener { click() }
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50))
     }
@@ -604,7 +604,7 @@ class MainActivity : Activity() {
 
     private fun styleMiniButton(button: Button, selected: Boolean) {
         button.setTextColor(if (selected) Color.WHITE else MUTED)
-        button.background = shape(if (selected) DARK else Color.WHITE, 11, if (selected) DARK else LINE)
+        button.background = shape(if (selected) GREEN else Color.WHITE, 10, if (selected) GREEN else LINE)
     }
 
     private fun chip(text: String, background: Int, foreground: Int) = label(text, 10, foreground, true).apply {
@@ -614,26 +614,26 @@ class MainActivity : Activity() {
 
     private fun initial(name: String) = label(name.take(1), 13, GREEN_DARK, true).apply {
         gravity = Gravity.CENTER
-        background = shape(PALE_GREEN, 12)
+        background = shape(PALE_GREEN, 10)
         layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
     }
 
     private fun card(color: Int = Color.WHITE, padding: Int = 19) = column(8).apply {
         setPadding(dp(padding), dp(padding), dp(padding), dp(padding))
-        background = shape(color, 22, if (color == Color.WHITE) LINE else color)
-        elevation = dp(2).toFloat()
+        background = shape(color, 16, if (color == Color.WHITE) LINE else color)
+        elevation = dp(1).toFloat()
     }
 
     private fun loadingMetric() = column(8).apply {
         setPadding(dp(12), dp(14), dp(12), dp(14))
-        background = shape(Color.WHITE, 18, LINE)
+        background = shape(Color.WHITE, 14, LINE)
         addView(loadingBar(45, 9))
         addView(loadingBar(62, 22).withMargins(top = 8))
     }
 
     private fun loadingPanel() = column(12).apply {
         setPadding(dp(18), dp(19), dp(18), dp(19))
-        background = shape(Color.WHITE, 22, LINE)
+        background = shape(Color.WHITE, 16, LINE)
         addView(loadingBar(95, 10))
         addView(loadingBar(190, 19))
         repeat(4) {
@@ -710,15 +710,15 @@ class MainActivity : Activity() {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
     companion object {
-        const val BG = 0xFFF4F7F2.toInt()
-        const val INK = 0xFF10201D.toInt()
-        const val MUTED = 0xFF71807B.toInt()
-        const val DARK = 0xFF081513.toInt()
-        const val GREEN = 0xFF2AD696.toInt()
-        const val GREEN_DARK = 0xFF087C5A.toInt()
-        const val PALE_GREEN = 0xFFE5F8ED.toInt()
-        const val LINE = 0xFFDDE7E1.toInt()
-        const val LOADING = 0xFFE8EEEA.toInt()
-        const val WARNING = 0xFFB76B33.toInt()
+        const val BG = 0xFFF8FAFC.toInt()
+        const val INK = 0xFF0F172A.toInt()
+        const val MUTED = 0xFF64748B.toInt()
+        const val DARK = 0xFF1D4ED8.toInt()
+        const val GREEN = 0xFF2563EB.toInt()
+        const val GREEN_DARK = 0xFF1D4ED8.toInt()
+        const val PALE_GREEN = 0xFFEFF6FF.toInt()
+        const val LINE = 0xFFE2E8F0.toInt()
+        const val LOADING = 0xFFE9EEF5.toInt()
+        const val WARNING = 0xFFB45309.toInt()
     }
 }
