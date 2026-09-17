@@ -1,0 +1,14 @@
+node_modules/
+.gradle/
+local.properties
+*.iml
+.idea/
+build/
+android/app/build/
+server/data/
+*.log
+.DS_Store
+.env
+*.dump
+*.dump.sha256
+backups/

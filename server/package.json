@@ -1,0 +1,25 @@
+{
+  "name": "attendesk-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production PostgreSQL API for AttenDesk attendance",
+  "type": "module",
+  "scripts": {
+    "start": "node src/production-server.js",
+    "start:demo": "node src/server.js",
+    "migrate": "node scripts/migrate.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "pdfkit": "^0.16.0",
+    "pg": "^8.13.1"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

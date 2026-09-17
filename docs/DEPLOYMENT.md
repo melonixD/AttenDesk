@@ -1,0 +1,49 @@
+# Deployment
+
+## PostgreSQL or Supabase
+
+AttenDesk uses standard PostgreSQL features (`pgcrypto`, `citext`, JSONB, partial indexes and transactions). You can run the included PostgreSQL 17 container, a managed PostgreSQL service, or Supabase.
+
+For Supabase, create a project, copy a server-side connection string, enable SSL, and set:
+
+```text
+DATABASE_URL=postgresql://...
+DB_SSL=true
+DB_SSL_REJECT_UNAUTHORIZED=true
+```
+
+Use Supabase's session/pooler URI for the continuously running API when required by your hosting platform. Run migration and `pg_dump` with the provider's recommended direct connection. Do not put the service key or database URI in browser JavaScript or the Android build.
+
+## Production checklist
+
+1. Use a dedicated database user and restrict inbound database connections to the application/backup network.
+2. Set `NODE_ENV=production`, three independent high-entropy secrets and a real Resend API key.
+3. Put the container behind a TLS reverse proxy or managed HTTPS load balancer. Redirect HTTP to HTTPS.
+4. Restrict the app's public API hostname, enable DDoS/WAF rate limiting, and centralize logs without recording OTPs or raw barcodes.
+5. Run at least two application replicas only after replacing the in-memory rate limiter with a shared Redis or gateway limiter.
+6. Run `server/scripts/backup.sh` daily and copy backups to a separate encrypted account/bucket.
+7. Run the guarded restore drill monthly against an isolated database.
+8. Build a signed Android App Bundle with the production HTTPS URL. Store the Play signing/upload key securely.
+9. Obtain college approval, publish a privacy/retention policy and limit admin accounts.
+10. Monitor `/health`, database storage, failed OTP volume, 5xx rate and backup age.
+11. Set `ENFORCE_TIMETABLE=true` after the real timetable has been imported and checked for conflicts.
+
+## Environment notes
+
+- `AUTH_SECRET`, `OTP_SECRET`, and `BARCODE_PEPPER` must be different. Rotating the barcode pepper requires re-registering cards unless you implement versioned peppers.
+- `MIN_RSSI` defaults to `-92`. Calibrate it across classrooms and at least five representative phone models.
+- `ENFORCE_TIMETABLE` defaults on when `NODE_ENV=production` unless explicitly set to `false`. `TIMETABLE_GRACE_MINUTES` defaults to 10 and accepts 0–60.
+- `DB_SSL=false` is appropriate only for the private local Docker network.
+- Development mode exposes OTP codes for testing. Never run it with real student data.
+
+## Android release
+
+Debug builds permit cleartext HTTP for local development. Release builds do not. Build using:
+
+```bash
+gradle bundleRelease -PATTENDESK_API_URL=https://attendance.college.edu
+```
+
+Browser apps cannot reliably advertise the required BLE payload, so the website is the dashboard/admin surface and native Android is the attendance surface.
+
+The source archive does not include a generated Gradle wrapper. Open `android/` in Android Studio (SDK 35/JDK 17), use the IDE's configured Gradle distribution, and generate the wrapper before command-line/CI builds. Commit the generated wrapper files to your deployment repository.
