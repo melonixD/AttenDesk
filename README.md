@@ -5,9 +5,9 @@ AttenDesk is a complete college attendance system built around the barcode alrea
 ## What is included
 
 - `android/` — native Android teacher/student app with real email-OTP login, BLE advertising/scanning, ID-card scanning, live roster, manual attendance and device-change requests.
-- `web/` — responsive admin, teacher-report and student-attendance website.
+- `public/` — responsive admin, teacher-report and student-attendance website, served directly by Vercel's CDN or by the local server.
 - `server/` — production Express API, PostgreSQL migrations, OTP mail delivery and Excel/PDF generation.
-- `prototype/` — the original click-through UI demo, still available at `/demo/`.
+- `public/demo/` — the original click-through UI demo, still available at `/demo/`.
 - `docs/` — architecture, deployment, testing, security and backup guidance.
 
 ## Implemented production features
@@ -42,6 +42,10 @@ docker compose up --build
 ```
 
 Open `http://localhost:8787`. The container applies each versioned database migration before starting. Sign in using `ADMIN_EMAIL`, configure the academic structure, approve registrations, register student barcodes, create course offerings/enrollments, and then build the Android app.
+
+## Deploy to Vercel
+
+AttenDesk now includes the root `index.js`, `package.json`, `vercel.json`, and `public/` layout Vercel expects. Import the folder containing those files—not the directory above it—add the production environment variables, run the database migration once, and deploy. See [VERCEL.md](docs/VERCEL.md) for the exact setup and 404 troubleshooting checklist.
 
 ## Run without Docker
 

@@ -4,9 +4,10 @@ const { Pool } = pg;
 
 export function createDatabase(connectionString = process.env.DATABASE_URL) {
   if (!connectionString) throw new Error("DATABASE_URL is required");
+  const defaultPoolSize = process.env.VERCEL ? 3 : 12;
   const pool = new Pool({
     connectionString,
-    max: Number(process.env.DB_POOL_SIZE || 12),
+    max: Number(process.env.DB_POOL_SIZE || defaultPoolSize),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 8_000,
     ssl: process.env.DB_SSL === "false" ? false : { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== "false" }

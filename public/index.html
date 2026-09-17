@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#071512" />
+    <meta name="description" content="AttenDesk — secure Bluetooth and ID-card attendance for colleges." />
+    <title>AttenDesk</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="route-progress" class="route-progress" aria-hidden="true"></div>
+    <div id="auth-view" class="auth-layout">
+      <section class="auth-visual">
+        <a class="logo" href="/"><span class="logo-mark"><i></i><i></i><i></i></span>AttenDesk</a>
+        <div class="visual-copy"><span class="eyebrow light">Verified classroom attendance</span><h1>Presence you can<br /><em>actually trust.</em></h1><p>Bluetooth proximity, registered ID cards and a complete academic attendance system.</p></div>
+        <div class="signal-art"><span></span><span></span><span></span><div>210<small>Classroom beacon</small></div></div>
+        <p class="visual-footer">Private by design · Auditable by default</p>
+      </section>
+      <section class="auth-panel">
+        <div id="login-card" class="auth-card">
+          <span class="eyebrow">College access</span><h2>Welcome back.</h2><p>Use your approved college email. We’ll send a secure one-time code.</p>
+          <form id="request-otp-form">
+            <label>College email<input id="login-email" type="email" placeholder="name@college.edu" required autocomplete="email" /></label>
+            <button class="primary" type="submit">Send login code <span>→</span></button>
+          </form>
+          <form id="verify-otp-form" class="hidden">
+            <label>Six-digit verification code<input id="login-otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required autocomplete="one-time-code" /></label>
+            <button class="primary" type="submit">Verify and continue <span>→</span></button>
+            <button class="text-button" type="button" data-action="change-email">Use another email</button>
+          </form>
+          <div id="auth-message" class="message hidden"></div>
+          <div class="auth-divider"><span>New to AttenDesk?</span></div>
+          <button class="secondary" data-action="open-register">Request an account</button>
+          <a class="demo-link" href="/demo/">Explore the interface demo</a>
+        </div>
+
+        <div id="register-card" class="auth-card hidden">
+          <button class="back-button" data-action="back-login">← Back</button>
+          <span class="eyebrow">New account</span><h2>Join your college.</h2><p>Verify your college email, then an administrator will approve your details.</p>
+          <form id="registration-form">
+            <div class="field-grid"><label>Full name<input name="fullName" required /></label><label>Role<select name="role" id="register-role"><option value="student">Student</option><option value="teacher">Teacher</option></select></label></div>
+            <label>College email<input name="email" id="register-email" type="email" required placeholder="name@college.edu" /></label>
+            <button class="text-button left" type="button" data-action="load-college">Load college options</button>
+            <div id="student-fields">
+              <div class="field-grid"><label>Roll number<input name="rollNumber" /></label><label>Branch<select name="branchId" id="register-branch"><option value="">Load college first</option></select></label></div>
+              <div class="field-grid"><label>Semester<select name="semesterId" id="register-semester"><option value="">Load college first</option></select></label><label>Section<select name="sectionId" id="register-section"><option value="">Load college first</option></select></label></div>
+            </div>
+            <div id="teacher-fields" class="hidden"><div class="field-grid"><label>Employee code<input name="employeeCode" /></label><label>Branch<select name="teacherBranchId" id="teacher-branch"><option value="">Optional</option></select></label></div></div>
+            <button class="primary" type="submit">Verify college email <span>→</span></button>
+          </form>
+          <form id="registration-otp-form" class="hidden">
+            <label>Verification code<input id="registration-otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required /></label>
+            <button class="primary" type="submit">Complete request</button>
+          </form>
+          <div id="register-message" class="message hidden"></div>
+        </div>
+      </section>
+    </div>
+
+    <div id="app-view" class="app-layout hidden">
+      <aside class="sidebar">
+        <a class="logo sidebar-logo" href="#"><span class="logo-mark"><i></i><i></i><i></i></span>AttenDesk</a>
+        <button id="sidebar-close" type="button" aria-label="Close navigation">×</button>
+        <span class="sidebar-label">Workspace</span>
+        <nav id="nav"></nav>
+        <div class="sidebar-bottom"><span class="status-dot"></span><div><strong>System operational</strong><small>Protected connection</small></div></div>
+      </aside>
+      <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+      <main class="main-content">
+        <header class="app-header"><button id="menu-button" type="button" aria-label="Open navigation" aria-expanded="false">☰</button><div><span id="page-eyebrow" class="eyebrow">Overview</span><h1 id="page-title">Good morning.</h1></div><div class="profile"><div><strong id="profile-name">User</strong><small id="profile-role">Role</small></div><button id="profile-avatar" type="button" aria-label="Open profile menu">U</button></div></header>
+        <div id="page-content" aria-live="polite"></div>
+      </main>
+    </div>
+
+    <div id="modal" class="modal-backdrop hidden" role="dialog" aria-modal="true"><div class="modal-card"><button class="modal-close" data-action="close-modal" aria-label="Close dialog">×</button><div id="modal-content"></div></div></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

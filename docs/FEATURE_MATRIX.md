@@ -5,7 +5,7 @@
 | PostgreSQL or Supabase | PostgreSQL migration in `server/migrations`; accepts a Supabase PostgreSQL connection string |
 | Student and teacher registration | College-domain registration, email verification, pending request and admin approval workflow |
 | College email/OTP login | 6-digit, 10-minute, single-use hashed OTP with five-attempt lockout and production email delivery |
-| Admin website | Responsive role-based website served from `web/` |
+| Admin website | Responsive role-based website served from `public/` locally and through Vercel's CDN |
 | Academic management | Create, list, activate/deactivate branches, semesters, subjects and sections; allocate courses and enroll students |
 | Timetable | Add/edit/remove weekly room/time/date-range periods; reject teacher, section and room conflicts; optionally enforce schedule at session start |
 | Barcode registration | Admin registration using USB scanner/manual input; college-scoped HMAC-only storage with last-four display |

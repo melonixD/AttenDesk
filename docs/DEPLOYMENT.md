@@ -28,6 +28,10 @@ Use Supabase's session/pooler URI for the continuously running API when required
 10. Monitor `/health`, database storage, failed OTP volume, 5xx rate and backup age.
 11. Set `ENFORCE_TIMETABLE=true` after the real timetable has been imported and checked for conflicts.
 
+## Vercel
+
+The release includes Vercel's required root Express export and `public/` asset layout. Follow [VERCEL.md](VERCEL.md) for the exact Root Directory, environment variables, migration sequence, verification URLs, and `404 NOT_FOUND` troubleshooting. On Vercel, set `DB_POOL_SIZE=3` initially and use a pooled/serverless PostgreSQL URL. Run backups outside Vercel because a Function does not provide persistent local storage.
+
 ## Environment notes
 
 - `AUTH_SECRET`, `OTP_SECRET`, and `BARCODE_PEPPER` must be different. Rotating the barcode pepper requires re-registering cards unless you implement versioned peppers.

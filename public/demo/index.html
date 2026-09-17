@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#081513" />
+    <title>AttenDesk — Attendance, verified nearby</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+
+    <main class="app-shell">
+      <header class="topbar">
+        <button class="brand" data-action="home" aria-label="AttenDesk home">
+          <span class="brand-mark"><i></i><i></i><i></i></span>
+          <span>AttenDesk</span>
+        </button>
+        <div class="top-actions">
+          <span class="secure-chip"><span class="live-dot"></span> Secure demo</span>
+          <button class="avatar-button" data-action="role-menu" aria-label="Switch role">MS</button>
+        </div>
+      </header>
+
+      <section id="role-screen" class="screen role-screen">
+        <div class="hero-copy">
+          <span class="eyebrow">Attendance, verified nearby</span>
+          <h1>One classroom.<br /><em>One clear record.</em></h1>
+          <p>Phone-based Bluetooth attendance connected to each student's registered ID card.</p>
+        </div>
+        <div class="role-grid">
+          <button class="role-card teacher-card" data-role="teacher">
+            <span class="role-icon">T</span>
+            <span class="role-text"><strong>Continue as teacher</strong><small>Start sessions and watch the live roster</small></span>
+            <span class="arrow">→</span>
+          </button>
+          <button class="role-card student-card" data-role="student">
+            <span class="role-icon">S</span>
+            <span class="role-text"><strong>Continue as student</strong><small>Discover a nearby class and scan your ID</small></span>
+            <span class="arrow">→</span>
+          </button>
+        </div>
+        <div class="trust-row">
+          <span>Registered device</span><i></i><span>Live barcode</span><i></i><span>Timed BLE session</span>
+        </div>
+      </section>
+
+      <section id="teacher-screen" class="screen hidden">
+        <div class="page-heading">
+          <div><span class="eyebrow">Monday, 15 September</span><h1>Good morning, Dr. Meera.</h1></div>
+          <button class="ghost-button" data-action="switch-role">Switch role</button>
+        </div>
+
+        <div class="metrics">
+          <article class="metric-card dark"><span>Today's classes</span><strong>04</strong><small>2 completed</small></article>
+          <article class="metric-card"><span>Average attendance</span><strong>78.4%</strong><small class="positive">↑ 2.6% this month</small></article>
+          <article class="metric-card"><span>Below 75%</span><strong>03</strong><small>Needs attention</small></article>
+        </div>
+
+        <div id="teacher-ready" class="teacher-grid">
+          <article class="panel next-class">
+            <div class="panel-title"><div><span class="eyebrow">Next class</span><h2>Fluid Mechanics</h2></div><span class="room-pill">Room 210</span></div>
+            <div class="class-meta"><span>FT-201</span><span>Food Technology</span><span>Section A</span></div>
+            <div class="beacon-status"><span class="beacon-glyph"><i></i><i></i><i></i></span><div><strong>Classroom beacon ready</strong><small>Teacher phone will broadcast this session</small></div><span class="signal-bars"><i></i><i></i><i></i><i></i></span></div>
+            <div class="timer-picker">
+              <label>Attendance window</label>
+              <div class="timer-options">
+                <button data-minutes="1">1 min</button><button class="selected" data-minutes="3">3 min</button><button data-minutes="5">5 min</button><button data-minutes="10">10 min</button>
+              </div>
+            </div>
+            <button class="primary-button" data-action="start-session"><span class="broadcast-small"></span>Start attendance</button>
+          </article>
+
+          <article class="panel schedule-panel">
+            <div class="panel-title"><div><span class="eyebrow">Today</span><h2>Your schedule</h2></div><button class="text-button">View all</button></div>
+            <div class="schedule-item completed"><time>09:00</time><div><strong>Food Chemistry</strong><small>Room 204 · Completed</small></div><span>✓</span></div>
+            <div class="schedule-item active"><time>11:00</time><div><strong>Fluid Mechanics</strong><small>Room 210 · Up next</small></div><span></span></div>
+            <div class="schedule-item"><time>13:00</time><div><strong>Food Microbiology</strong><small>Room 211</small></div><span></span></div>
+            <div class="schedule-item"><time>15:00</time><div><strong>Heat Transfer</strong><small>Lab 02</small></div><span></span></div>
+          </article>
+        </div>
+
+        <article id="live-session" class="panel live-session hidden">
+          <div class="live-header">
+            <div><span class="eyebrow live-label"><span class="live-dot"></span>Live attendance</span><h2>Fluid Mechanics · Room 210</h2><p>Food Technology · Section A</p></div>
+            <div class="countdown"><strong id="timer-value">03:00</strong><small>remaining</small></div>
+          </div>
+          <div class="progress-track"><span id="timer-progress"></span></div>
+          <div class="live-summary">
+            <div><strong id="present-count">3</strong><span>Present</span></div><div><strong id="pending-count">5</strong><span>Waiting</span></div><div><strong>8</strong><span>Total</span></div>
+            <div class="session-actions"><button class="ghost-button" data-action="extend">+ 1 minute</button><button class="danger-button" data-action="end-session">End session</button></div>
+          </div>
+          <div class="roster-heading"><h3>Live roster</h3><span>Updates instantly</span></div>
+          <div id="roster-list" class="roster-list"></div>
+        </article>
+
+        <article class="panel reports-panel">
+          <div class="panel-title"><div><span class="eyebrow">Attendance intelligence</span><h2>Students needing attention</h2></div><span class="warning-pill">Below 75%</span></div>
+          <div class="report-row"><span class="student-avatar coral">I</span><div><strong>Ishaan Mishra</strong><small>240105</small></div><div class="percent-bar"><i style="width:60%"></i></div><b>60%</b></div>
+          <div class="report-row"><span class="student-avatar violet">A</span><div><strong>Ananya Gupta</strong><small>240102</small></div><div class="percent-bar"><i style="width:65%"></i></div><b>65%</b></div>
+          <div class="report-row"><span class="student-avatar blue">R</span><div><strong>Rohan Patel</strong><small>240107</small></div><div class="percent-bar"><i style="width:70%"></i></div><b>70%</b></div>
+        </article>
+      </section>
+
+      <section id="student-screen" class="screen hidden">
+        <div class="student-hero">
+          <div class="page-heading"><div><span class="eyebrow">Registered device · 240104</span><h1>Good morning, Diya.</h1></div><button class="ghost-button" data-action="switch-role">Switch role</button></div>
+          <article class="attendance-ring-card">
+            <div class="ring" style="--value:81"><div><strong>81%</strong><span>Overall</span></div></div>
+            <div><span class="eyebrow">Your attendance</span><h2>You're on track.</h2><p>Keep attending to stay comfortably above the 75% requirement.</p></div>
+          </article>
+        </div>
+
+        <article class="panel nearby-panel">
+          <div class="panel-title"><div><span class="eyebrow"><span class="scanning-dot"></span>Scanning nearby</span><h2>Available attendance</h2></div><span class="bluetooth-pill">ᛒ Bluetooth on</span></div>
+          <div class="bubble-stage">
+            <span class="orbit orbit-one"></span><span class="orbit orbit-two"></span>
+            <button id="class-bubble" class="class-bubble" data-action="open-session">
+              <span class="bubble-room">210</span><strong>Fluid<br />Mechanics</strong><small>Dr. Meera Singh</small><i>Tap to join</i>
+            </button>
+            <span class="faint-bubble one"></span><span class="faint-bubble two"></span><span class="faint-bubble three"></span>
+          </div>
+          <p class="nearby-note">Only classes on your timetable are shown. Keep Bluetooth enabled.</p>
+        </article>
+
+        <div class="subject-grid">
+          <article class="subject-card"><span>FM</span><div><strong>Fluid Mechanics</strong><small>17 of 20 classes</small></div><b>85%</b></article>
+          <article class="subject-card warning"><span>MB</span><div><strong>Food Microbiology</strong><small>14 of 20 classes</small></div><b>70%</b></article>
+          <article class="subject-card"><span>FC</span><div><strong>Food Chemistry</strong><small>18 of 21 classes</small></div><b>85.7%</b></article>
+        </div>
+      </section>
+    </main>
+
+    <div id="scanner-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="ID card scanner">
+      <div class="scanner-modal">
+        <div class="scanner-top"><button data-action="close-scanner">×</button><div><strong>Scan your ID card</strong><small>Fluid Mechanics · Room 210</small></div><span>ᛒ</span></div>
+        <div class="camera-preview">
+          <div class="scan-frame"><i></i><i></i><i></i><i></i><span class="scan-line"></span></div>
+          <div class="id-card-mock"><span>COLLEGE ID</span><strong>|||| ||||| || |||||</strong><small>HBTU240104</small></div>
+        </div>
+        <p>Position the barcode inside the frame</p>
+        <button class="primary-button" data-action="simulate-scan">Simulate successful scan</button>
+      </div>
+    </div>
+
+    <div id="success-modal" class="modal-backdrop hidden">
+      <div class="success-card"><span class="success-check">✓</span><span class="eyebrow">Attendance confirmed</span><h2>You're marked present.</h2><p>Fluid Mechanics · Room 210<br />11:02 AM · Barcode + Bluetooth</p><button class="primary-button" data-action="close-success">Done</button></div>
+    </div>
+
+    <div id="manual-modal" class="modal-backdrop hidden">
+      <div class="manual-card"><button class="modal-close" data-action="close-manual">×</button><span class="eyebrow">Teacher override</span><h2>Mark <span id="manual-name"></span> present?</h2><label>Reason<select id="manual-reason"><option>ID card forgotten</option><option>Phone unavailable</option><option>Bluetooth issue</option><option>Approved by teacher</option></select></label><button class="primary-button" data-action="confirm-manual">Confirm manual attendance</button><small>This change will be recorded in the audit log.</small></div>
+    </div>
+
+    <div id="toast" class="toast">Session started</div>
+    <script src="app.js"></script>
+  </body>
+</html>

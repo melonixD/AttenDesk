@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { seed } from "./data.js";
 
-const prototypeRoot = new URL("../../prototype/", import.meta.url);
+const prototypeRoot = new URL("../../public/demo/", import.meta.url);
 
 const servePrototype = (res, pathname) => {
   const files = {

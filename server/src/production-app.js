@@ -16,8 +16,7 @@ const median = (values = []) => {
   return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
 };
 
-export function createProductionApp({ db, mailer = createMailer() }) {
-  const app = express();
+export function createProductionApp({ db, mailer = createMailer(), app = express() }) {
   const authSecret = process.env.AUTH_SECRET;
   const otpSecret = process.env.OTP_SECRET;
   const barcodePepper = process.env.BARCODE_PEPPER;
@@ -883,8 +882,8 @@ export function createProductionApp({ db, mailer = createMailer() }) {
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "API_ROUTE_NOT_FOUND" }));
 
-  const webRoot = fileURLToPath(new URL("../../web", import.meta.url));
-  const demoRoot = fileURLToPath(new URL("../../prototype", import.meta.url));
+  const webRoot = fileURLToPath(new URL("../../public", import.meta.url));
+  const demoRoot = fileURLToPath(new URL("../../public/demo", import.meta.url));
   app.use("/demo", express.static(demoRoot, { index: "index.html", maxAge: "1h" }));
   app.use(express.static(webRoot, { index: "index.html", maxAge: process.env.NODE_ENV === "production" ? "1h" : 0 }));
   app.get("*", (_req, res) => res.sendFile(`${webRoot}/index.html`));

@@ -6,8 +6,7 @@ COPY server/package*.json ./server/
 RUN cd server && npm ci --omit=dev
 RUN mkdir -p /var/attendesk-backups && chown -R node:node /var/attendesk-backups
 COPY --chown=node:node server ./server
-COPY --chown=node:node web ./web
-COPY --chown=node:node prototype ./prototype
+COPY --chown=node:node public ./public
 USER node
 EXPOSE 8787
 CMD ["sh", "-c", "cd server && npm run migrate && npm start"]

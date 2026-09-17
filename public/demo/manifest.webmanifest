@@ -1,0 +1,9 @@
+{
+  "name": "AttenDesk Attendance Demo",
+  "short_name": "AttenDesk",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f3f6f1",
+  "theme_color": "#081513",
+  "icons": []
+}

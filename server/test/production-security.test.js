@@ -39,9 +39,9 @@ test("production schema and API contain the required persistent controls", async
 
 test("production UI includes resilient loading and accessibility states", async () => {
   const [webApp, styles, html, android] = await Promise.all([
-    fs.readFile(new URL("../../web/app.js", import.meta.url), "utf8"),
-    fs.readFile(new URL("../../web/styles.css", import.meta.url), "utf8"),
-    fs.readFile(new URL("../../web/index.html", import.meta.url), "utf8"),
+    fs.readFile(new URL("../../public/app.js", import.meta.url), "utf8"),
+    fs.readFile(new URL("../../public/styles.css", import.meta.url), "utf8"),
+    fs.readFile(new URL("../../public/index.html", import.meta.url), "utf8"),
     fs.readFile(new URL("../../android/app/src/main/java/in/attendesk/app/MainActivity.kt", import.meta.url), "utf8")
   ]);
   assert.match(webApp, /function pageSkeleton/);
@@ -50,4 +50,18 @@ test("production UI includes resilient loading and accessibility states", async 
   assert.match(styles, /\.skeleton-metrics/);
   assert.match(html, /aria-live="polite"/);
   assert.match(android, /private fun loadingPanel/);
+});
+
+test("Vercel has a root Express export and CDN-ready public assets", async () => {
+  const [entry, packageJson, vercelConfig, html] = await Promise.all([
+    fs.readFile(new URL("../../index.js", import.meta.url), "utf8"),
+    fs.readFile(new URL("../../package.json", import.meta.url), "utf8"),
+    fs.readFile(new URL("../../vercel.json", import.meta.url), "utf8"),
+    fs.readFile(new URL("../../public/index.html", import.meta.url), "utf8")
+  ]);
+  assert.match(entry, /import express from "express"/);
+  assert.match(entry, /export default app/);
+  assert.equal(JSON.parse(packageJson).dependencies.express, "^4.21.2");
+  assert.ok(Array.isArray(JSON.parse(vercelConfig).headers));
+  assert.match(html, /AttenDesk/);
 });
