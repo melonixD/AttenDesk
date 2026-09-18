@@ -78,6 +78,13 @@ test("mobile attendance token is bound to its installation", async () => {
   assert.equal(result.body.error, "DEVICE_TOKEN_MISMATCH");
 });
 
+test("web Bluetooth attendance requires a session beacon proof", async () => {
+  const token = issueAccessToken(AUTH_SECRET, { sub: STUDENT_ID, org: ORG_ID, role: "student", clientType: "web_ble", installationId: "browser-a" });
+  const result = await request("/api/attendance/sessions/session-1/mark", token, { installationId: "browser-a", barcode: "CARD1234" });
+  assert.equal(result.status, 422);
+  assert.equal(result.body.error, "INVALID_BLUETOOTH_PROOF");
+});
+
 test("overlapping timetable room allocation is rejected", async () => {
   const token = issueAccessToken(AUTH_SECRET, { sub: ADMIN_ID, org: ORG_ID, role: "admin", clientType: "web" });
   const result = await request("/api/admin/timetable", token, {

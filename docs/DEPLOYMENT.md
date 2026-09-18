@@ -48,6 +48,8 @@ Debug builds permit cleartext HTTP for local development. Release builds do not.
 gradle bundleRelease -PATTENDESK_API_URL=https://attendance.college.edu
 ```
 
-Browser apps cannot reliably advertise the required BLE payload, so the website is the dashboard/admin surface and native Android is the attendance surface.
+Browser apps cannot advertise the required BLE classroom service. The teacher therefore uses the Android Teacher Beacon companion. Students can mark attendance either from the Android app or from the HTTPS website in Chrome on Android. The website uses Web Bluetooth as a Central client, reads the GATT session token, disconnects, and then scans the card with the browser camera. Safari/iPhone and Firefox are not supported for Bluetooth attendance.
 
 The source archive does not include a generated Gradle wrapper. Open `android/` in Android Studio (SDK 35/JDK 17), use the IDE's configured Gradle distribution, and generate the wrapper before command-line/CI builds. Commit the generated wrapper files to your deployment repository.
+
+For website Bluetooth, keep the `Permissions-Policy` entries for both `bluetooth=(self)` and `camera=(self)`, deploy only over HTTPS, and do not place the app inside a cross-origin iframe.

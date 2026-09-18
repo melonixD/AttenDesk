@@ -11,10 +11,19 @@
   --yellow: #f59e0b;
   --red: #be123c;
   --shadow: 0 8px 24px rgba(15, 23, 42, .06);
+  --cursor-x: 50vw;
+  --cursor-y: 50vh;
+  --scene-x: 0px;
+  --scene-y: 0px;
+  --scene-inverse-x: 0px;
+  --scene-inverse-y: 0px;
+  --scene-rx: 0deg;
+  --scene-ry: 0deg;
 }
 
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; background: var(--paper); color: var(--ink); font-family: Inter, "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow-x: hidden; }
+body::before { content:""; position:fixed; inset:0; z-index:0; pointer-events:none; background: radial-gradient(520px circle at var(--cursor-x) var(--cursor-y), rgba(37,99,235,.08), transparent 67%); }
 button, select { font: inherit; }
 button { color: inherit; }
 .ambient { position: fixed; border-radius: 50%; filter: blur(80px); pointer-events: none; opacity: .45; }
@@ -35,6 +44,28 @@ button { color: inherit; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } }
 .eyebrow { display: inline-flex; align-items: center; gap: 8px; text-transform: uppercase; letter-spacing: .12em; color: var(--green-dark); font-size: 11px; font-weight: 800; }
 .hero-copy { width: min(760px, 100%); margin: 55px 0 48px; }
+.role-hero { min-height: 455px; display: grid; grid-template-columns: minmax(0,1fr) 390px; align-items: center; gap: 36px; perspective: 1100px; }
+.role-hero .hero-copy { margin: 45px 0; }
+.hero-orbit { position: relative; width: 360px; height: 360px; justify-self: end; display: grid; place-items: center; transform-style: preserve-3d; transform: perspective(900px) rotateX(var(--scene-rx)) rotateY(var(--scene-ry)) translate3d(var(--scene-x), var(--scene-y), 0); transition: transform .14s linear; }
+.hero-ring { position: absolute; border: 1px solid rgba(37,99,235,.2); border-radius: 50%; transform-style: preserve-3d; }
+.hero-ring-one { width: 310px; height: 310px; border-style: dashed; animation: heroSpin 18s linear infinite; }
+.hero-ring-two { width: 244px; height: 244px; border-color: rgba(37,99,235,.13); animation: heroSpin 13s linear infinite reverse; }
+.hero-ring-three { width: 176px; height: 176px; border-color: rgba(37,99,235,.1); box-shadow: 0 0 0 24px rgba(37,99,235,.022), inset 0 0 40px rgba(37,99,235,.035); }
+.hero-core { position: relative; z-index: 2; width: 132px; height: 132px; border-radius: 50%; background: radial-gradient(circle at 32% 24%, #60a5fa, var(--green) 48%, #1d4ed8 78%); color: white; box-shadow: 0 30px 60px rgba(37,99,235,.28), 0 0 0 12px rgba(37,99,235,.07); display: flex; flex-direction: column; align-items: center; justify-content: center; transform: translateZ(60px); animation: coreFloat 4s ease-in-out infinite; }
+.hero-core span { font-size: 8px; font-weight: 800; letter-spacing: .18em; opacity: .75; }
+.hero-core strong { margin: 3px 0; font-size: 38px; line-height: 1; letter-spacing: -.05em; }
+.hero-core small { font-size: 8px; opacity: .78; }
+.hero-float { position: absolute; z-index: 4; min-width: 138px; padding: 11px 13px; border: 1px solid rgba(191,219,254,.78); border-radius: 12px; background: rgba(255,255,255,.78); box-shadow: 0 18px 45px rgba(15,23,42,.11); backdrop-filter: blur(14px); display: flex; align-items: center; gap: 9px; transform-style: preserve-3d; }
+.hero-float strong { display: block; font-size: 10px; }
+.hero-float small { display: block; margin-top: 2px; color: var(--muted); font-size: 8px; }
+.hero-float-one { left: -3px; top: 69px; animation: heroCardOne 4.8s ease-in-out infinite; }
+.hero-float-one i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 5px rgba(37,99,235,.1); }
+.hero-float-two { right: -9px; bottom: 68px; animation: heroCardTwo 5.2s .4s ease-in-out infinite; }
+.hero-float-two > span { width: 25px; height: 25px; border-radius: 8px; background: #eff6ff; color: var(--green-dark); display: grid; place-items: center; font-size: 10px; font-weight: 900; }
+@keyframes heroSpin { to { transform: rotateZ(360deg) rotateX(7deg); } }
+@keyframes coreFloat { 50% { transform: translate3d(0,-8px,70px) rotateY(4deg); } }
+@keyframes heroCardOne { 50% { transform: translate3d(-7px,-9px,74px) rotateY(5deg); } }
+@keyframes heroCardTwo { 50% { transform: translate3d(8px,7px,58px) rotateY(-5deg); } }
 h1, h2, h3, p { margin-top: 0; }
 .hero-copy h1 { margin: 14px 0 20px; font: 800 clamp(46px, 7vw, 86px)/.98 "Manrope"; letter-spacing: -.065em; }
 .hero-copy h1 em { color: var(--green-dark); font-style: normal; }
@@ -127,3 +158,68 @@ h1, h2, h3, p { margin-top: 0; }
 .scanner-top button, .modal-close { border: 1px solid var(--line); border-radius: 9px; background: #f8fafc; }
 .success-check { background: var(--green); color: white; box-shadow: 0 0 0 10px rgba(37,99,235,.09); }
 .toast { border-radius: 10px; background: #172554; }
+
+/* Fluid motion layer for the interactive product walkthrough. */
+.screen { animation: demoScreenIn .55s cubic-bezier(.16,1,.3,1) both; }
+.screen:not(.hidden) > * { animation: demoRise .58s cubic-bezier(.16,1,.3,1) both; }
+.screen:not(.hidden) > *:nth-child(2) { animation-delay: .055s; }
+.screen:not(.hidden) > *:nth-child(3) { animation-delay: .11s; }
+.screen:not(.hidden) > *:nth-child(4) { animation-delay: .165s; }
+.role-card, .metric-card, .panel, .subject-card { transition: transform .42s cubic-bezier(.34,1.45,.64,1), box-shadow .42s cubic-bezier(.16,1,.3,1), border-color .22s ease; }
+.role-card:hover, .metric-card:hover, .subject-card:hover { transform: translateY(-3px); box-shadow: 0 15px 36px rgba(15,23,42,.08); }
+.primary-button, .ghost-button, .danger-button, .timer-options button, .status-check { transition: transform .32s cubic-bezier(.34,1.45,.64,1), box-shadow .32s cubic-bezier(.16,1,.3,1), background .2s ease, border-color .2s ease; }
+.primary-button:hover { transform: translateY(-2px); box-shadow: 0 11px 25px rgba(37,99,235,.2); }
+.primary-button:active, .ghost-button:active, .timer-options button:active { transform: scale(.975); }
+.scanner-modal, .success-card, .manual-card { animation: demoModalIn .48s cubic-bezier(.16,1,.3,1) both; }
+.modal-backdrop { animation: demoBackdropIn .28s ease both; }
+.toast { transform: translate(-50%,120px) scale(.94); transition: opacity .28s ease, transform .46s cubic-bezier(.34,1.45,.64,1); }
+.toast.show { transform: translate(-50%,0) scale(1); }
+.orbit-one { animation: orbitBreath 4s ease-in-out infinite; }
+.orbit-two { animation: orbitBreath 4s 1s ease-in-out infinite reverse; }
+.ambient { display: block; opacity: .52; filter: blur(100px); will-change: transform; }
+.ambient-one { background: #dbeafe; transform: translate3d(var(--scene-x), var(--scene-y), 0); }
+.ambient-two { background: #bfdbfe; transform: translate3d(var(--scene-inverse-x), var(--scene-inverse-y), 0); }
+.depth-surface.depth-surface { --surface-rx:0deg; --surface-ry:0deg; --surface-x:50%; --surface-y:50%; transform: perspective(1050px) rotateX(var(--surface-rx)) rotateY(var(--surface-ry)) translate3d(0,0,0); transform-style: preserve-3d; background-image: radial-gradient(340px circle at var(--surface-x) var(--surface-y), rgba(96,165,250,.12), transparent 58%); transition: transform .62s cubic-bezier(.16,1,.3,1), box-shadow .44s cubic-bezier(.16,1,.3,1), border-color .24s ease; }
+.depth-surface.depth-active { transform: perspective(1050px) rotateX(var(--surface-rx)) rotateY(var(--surface-ry)) translate3d(0,-4px,10px); box-shadow: 0 22px 52px rgba(15,23,42,.105), 0 5px 16px rgba(37,99,235,.06); transition-duration:.1s,.28s,.24s; transition-timing-function:linear,cubic-bezier(.16,1,.3,1),ease; will-change:transform; }
+.depth-surface .role-icon, .depth-surface .panel-title, .depth-surface > strong, .depth-surface .ring { transform: translateZ(18px); }
+.depth-surface .arrow { transform: translateZ(25px); transition: transform .35s cubic-bezier(.34,1.45,.64,1); }
+.depth-surface.depth-active .arrow { transform: translate3d(5px,0,25px); }
+.bubble-stage { perspective: 1000px; }
+.class-bubble { transform-style: preserve-3d; animation: beaconFloat 3.8s ease-in-out infinite; }
+.class-bubble::after { content:""; position:absolute; inset:12px; border-radius:50%; border:1px solid rgba(255,255,255,.2); box-shadow: inset 0 12px 25px rgba(255,255,255,.12); }
+.faint-bubble { animation: particleFloat 4.2s ease-in-out infinite; }
+.faint-bubble.two { animation-delay: .8s; }.faint-bubble.three { animation-delay: 1.5s; }
+.id-card-mock { animation: idCardFloat 3.6s ease-in-out infinite; box-shadow: 0 25px 45px rgba(0,0,0,.28); }
+.percent-bar i { transform-origin:left; animation: barGrow .9s .35s cubic-bezier(.16,1,.3,1) both; }
+.roster-row { transition: transform .32s cubic-bezier(.16,1,.3,1), background .2s ease; }
+.roster-row:hover { transform: translateX(4px); background:#f8fbff; }
+::view-transition-old(attendesk-screen) { animation: viewOut .24s ease both; }
+::view-transition-new(attendesk-screen) { animation: viewIn .48s cubic-bezier(.16,1,.3,1) both; }
+.screen:not(.hidden) { view-transition-name: attendesk-screen; }
+@keyframes beaconFloat { 0%,100% { transform: translate3d(var(--bubble-x,0),var(--bubble-y,0),28px) rotateX(var(--bubble-rx,0deg)) rotateY(var(--bubble-ry,0deg)); } 50% { transform: translate3d(var(--bubble-x,0),calc(var(--bubble-y,0px) - 9px),44px) rotateX(var(--bubble-rx,0deg)) rotateY(var(--bubble-ry,0deg)); } }
+@keyframes particleFloat { 50% { transform: translate3d(5px,-10px,24px) scale(1.08); } }
+@keyframes idCardFloat { 0%,100% { transform: rotate(-7deg) translateY(0); } 50% { transform: rotate(-4deg) translateY(-7px); } }
+@keyframes barGrow { from { transform:scaleX(0); } }
+@keyframes viewOut { to { opacity:0; transform:translate3d(0,-8px,0) scale(.99); } }
+@keyframes viewIn { from { opacity:0; transform:translate3d(0,14px,0) scale(.99); } }
+@keyframes demoScreenIn { from { opacity: 0; transform: translate3d(0,10px,0); } }
+@keyframes demoRise { from { opacity: 0; transform: translate3d(0,14px,0); } }
+@keyframes demoBackdropIn { from { opacity: 0; } }
+@keyframes demoModalIn { from { opacity: 0; transform: translate3d(0,20px,0) scale(.965); } }
+@keyframes orbitBreath { 50% { transform: scale(1.035); opacity: .72; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .depth-surface.depth-surface, .hero-orbit, .class-bubble { transform: none !important; }
+}
+
+@media (max-width: 900px) {
+  .role-hero { grid-template-columns: 1fr; min-height: auto; }
+  .role-hero .hero-copy { margin: 34px 0 5px; }
+  .hero-orbit { width: 320px; height: 320px; justify-self: center; margin-bottom: 10px; transform: scale(.9); }
+}
+
+@media (max-width: 560px) {
+  .hero-orbit { width: 270px; height: 270px; transform: scale(.78); margin: -20px auto; }
+  .hero-float-one { left: -18px; }.hero-float-two { right: -18px; }
+}

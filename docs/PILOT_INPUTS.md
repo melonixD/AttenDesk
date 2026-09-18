@@ -37,6 +37,8 @@ Provide spreadsheets/CSV exports with these columns. IDs may be added during imp
 
 Raw barcode values are sensitive identifiers. Prefer registering them through the admin page with a USB barcode scanner. The server stores only a college-scoped keyed hash and the last four characters.
 
+Also provide one redacted close-up photo of the printed barcode or confirm its symbology (`CODE_128`, `CODE_39`, `CODABAR`, `EAN_13`, `EAN_8` or `ITF`). Do not send a real student's full unredacted card in chat.
+
 ## 4. Hosting and email choices
 
 - PostgreSQL/Supabase project and a server-side connection string.
@@ -54,19 +56,19 @@ Raw barcode values are sensitive identifiers. Prefer registering them through th
 - Android upload/signing key, owned and backed up by the college. Never send the private key in chat.
 - Production HTTPS API URL.
 - Minimum phone policy. The current app supports Android 8+ but attendance requires working BLE scanning; teacher phones also require BLE advertising support.
+- Student web policy: current Chrome on Android, Bluetooth and camera permission, and access to the production HTTPS hostname. Safari/iPhone and Firefox cannot be used for the Bluetooth attendance flow.
 
 ## 6. Physical pilot resources
 
 - One BLE-advertising-capable Android phone per test teacher.
-- At least five representative student phone models and real test ID cards.
+- At least five representative Android student phone models running Chrome and real test ID cards.
 - Two adjacent classrooms for cross-wall testing.
 - Reliable Wi-Fi/mobile data during the attendance window.
 - A small pilot roster, named pilot owner, support contact and rollback procedure.
 
 ## Values that must be measured, not guessed
 
-- `MIN_RSSI`: measure centre, door, back-bench and both sides of the shared wall before choosing it.
+- `MIN_RSSI`: measure centre, door, back-bench and both sides of the shared wall before choosing it for native-app students. Stable Web Bluetooth does not expose RSSI.
 - Session duration: test with the largest expected class (about 60 students).
 - Timetable grace: choose a value based on actual class-change timing.
 - Backup retention and recovery objective: obtain college approval and complete a restore drill.
-

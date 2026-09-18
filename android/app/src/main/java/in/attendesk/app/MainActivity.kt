@@ -14,6 +14,8 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -78,7 +80,7 @@ class MainActivity : Activity() {
             addView(space(22))
             addView(label("REGISTERED DEVICE  ·  LIVE BARCODE  ·  TIMED BLE", 10, MUTED, bold = true).apply { gravity = Gravity.CENTER })
         }
-        setContentView(scroll(content))
+        setAnimatedContent(scroll(content))
     }
 
     private fun showLogin(expectedRole: String, emailValue: String = "", codeSent: Boolean = false, developmentOtp: String? = null) {
@@ -116,7 +118,7 @@ class MainActivity : Activity() {
             addView(outlineButton("Back") { showRoleChooser() }.withMargins(top = 10))
             addView(label("New student or teacher? Register on the AttenDesk website, then wait for admin approval.", 11, MUTED).withMargins(top = 12))
         }
-        setContentView(scroll(content))
+        setAnimatedContent(scroll(content))
     }
 
     private fun requestLoginCode(expectedRole: String, email: String) {
@@ -232,7 +234,7 @@ class MainActivity : Activity() {
             })
             addView(infoStrip("Reports are stored centrally", "Open the AttenDesk website for Excel, PDF and below-${formatPercent(offering.attendanceThreshold)}% reports."))
         }
-        setContentView(scroll(content))
+        setAnimatedContent(scroll(content))
     }
 
     private fun startTeacherSession(offering: ClassOffering, room: String, minutes: Int) {
@@ -241,7 +243,7 @@ class MainActivity : Activity() {
             runCatching { api.startSession(offering.id, room, minutes * 60) }
                 .onSuccess { session ->
                     currentSession = session
-                    ble.startTeacherBroadcast(session.beaconToken,
+                    ble.startTeacherBroadcast(session.beaconToken, session.roomId,
                         onStarted = { main.post { showTeacherLive(session) } },
                         onError = { message ->
                             io.execute {
@@ -273,7 +275,7 @@ class MainActivity : Activity() {
             }.withMargins(top = 12))
             addView(outlineButton("End attendance") { closeTeacherSession() })
         }
-        setContentView(scroll(content))
+        setAnimatedContent(scroll(content))
         timerRunnable?.let(main::removeCallbacks)
         timerRunnable = object : Runnable {
             override fun run() {
@@ -411,7 +413,7 @@ class MainActivity : Activity() {
             }
             if (dashboard.subjects.isEmpty()) addView(infoStrip("No subjects assigned", "Ask the administrator to enroll you in your courses."))
         }
-        setContentView(scroll(content))
+        setAnimatedContent(scroll(content))
         nearbySignals.clear()
         resolvedTokens.clear()
         ble.startStudentScan(onSignal = { signal ->
@@ -442,8 +444,18 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             background = shape(GREEN_DARK, radius = 110)
             setOnClickListener { scanStudentCard(session, signal) }
+            alpha = 0f
+            scaleX = 0.84f
+            scaleY = 0.84f
         }
         card.addView(bubble, LinearLayout.LayoutParams(dp(210), dp(210)).apply { gravity = Gravity.CENTER; topMargin = dp(28); bottomMargin = dp(18) })
+        bubble.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(440L)
+            .setInterpolator(OvershootInterpolator(0.82f))
+            .start()
         card.addView(label("Signal ${signal.medianRssi} dBm · ${session.branch} · Section ${session.section}", 11, MUTED).apply { gravity = Gravity.CENTER })
     }
 
@@ -485,7 +497,7 @@ class MainActivity : Activity() {
             }.withMargins(top = 24))
             addView(loadingPanel().withMargins(top = 5))
         }
-        setContentView(scroll(content))
+        setAnimatedContent(scroll(content))
         content.announceForAccessibility(message)
     }
 
@@ -508,7 +520,7 @@ class MainActivity : Activity() {
             addView(label(message, 14, MUTED).apply { gravity = Gravity.CENTER })
             addView(primaryButton("Done") { done() }.withMargins(top = 15))
         }
-        setContentView(scroll(content))
+        setAnimatedContent(scroll(content))
     }
 
     private fun topRow(title: String, eyebrow: String) = row().apply {
@@ -670,6 +682,22 @@ class MainActivity : Activity() {
         setBackgroundColor(BG)
         isFillViewport = true
         addView(content)
+    }
+
+    private fun setAnimatedContent(view: View) {
+        view.alpha = 0f
+        view.translationY = dp(12).toFloat()
+        view.scaleX = 0.992f
+        view.scaleY = 0.992f
+        setContentView(view)
+        view.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(360L)
+            .setInterpolator(DecelerateInterpolator(1.7f))
+            .start()
     }
 
     private fun label(text: String, size: Int, color: Int, bold: Boolean = false) = TextView(this).apply {

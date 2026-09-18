@@ -201,13 +201,16 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const found = await db.query("SELECT id,organization_id,email,full_name,role,status FROM users WHERE organization_id=$1 AND lower(email)=lower($2)", [organization.id, email]);
     const user = found.rows[0];
     if (!user || user.status !== "active") return res.status(403).json({ error: "ACCOUNT_NOT_ACTIVE" });
-    const clientType = req.body.clientType === "web" ? "web" : "mobile";
+    const requestedClientType = req.body.clientType === "web" ? "web" : req.body.clientType === "web_ble" ? "web_ble" : "mobile";
+    const clientType = user.role === "student" ? requestedClientType : requestedClientType === "mobile" ? "mobile" : "web";
+    const deviceBoundClient = clientType === "mobile" || clientType === "web_ble";
     const installationId = String(req.body.installationId || "").trim();
-    if (user.role === "student" && clientType === "mobile") {
+    if (user.role === "student" && deviceBoundClient) {
       if (!installationId) return res.status(400).json({ error: "INSTALLATION_ID_REQUIRED" });
       const active = await db.query("SELECT * FROM student_devices WHERE student_id=$1 AND status='active'", [user.id]);
       if (!active.rowCount) {
-        await db.query("INSERT INTO student_devices(student_id,installation_id,device_name,platform,status,approved_at) VALUES($1,$2,$3,$4,'active',now())", [user.id, installationId, req.body.deviceName || "Android phone", req.body.platform === "ios" ? "ios" : "android"]);
+        const platform = clientType === "web_ble" ? "web" : req.body.platform === "ios" ? "ios" : "android";
+        await db.query("INSERT INTO student_devices(student_id,installation_id,device_name,platform,status,approved_at) VALUES($1,$2,$3,$4,'active',now())", [user.id, installationId, req.body.deviceName || (clientType === "web_ble" ? "Web Bluetooth browser" : "Android phone"), platform]);
       } else if (active.rows[0].installation_id !== installationId) {
         const deviceChangeToken = issueAccessToken(authSecret, { sub: user.id, org: user.organization_id, role: "device_change" }, 600);
         return res.status(403).json({ error: "DEVICE_CHANGE_REQUIRED", message: "Submit a device-change request from this verified email.", deviceChangeToken });
@@ -216,10 +219,10 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     }
     const accessToken = issueAccessToken(authSecret, {
       sub: user.id, org: user.organization_id, role: user.role, clientType,
-      ...(clientType === "mobile" ? { installationId } : {})
+      ...(deviceBoundClient ? { installationId } : {})
     });
     const refreshToken = randomToken(48);
-    await db.query("INSERT INTO refresh_tokens(user_id,token_hash,installation_id,expires_at) VALUES($1,$2,$3,now()+interval '30 days')", [user.id, sha256(refreshToken), clientType === "mobile" ? installationId : null]);
+    await db.query("INSERT INTO refresh_tokens(user_id,token_hash,installation_id,client_type,expires_at) VALUES($1,$2,$3,$4,now()+interval '30 days')", [user.id, sha256(refreshToken), deviceBoundClient ? installationId : null, clientType]);
     await db.query("UPDATE users SET last_login_at=now() WHERE id=$1", [user.id]);
     res.json({ accessToken, refreshToken, expiresIn: 900, user });
   }));
@@ -250,18 +253,19 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const tokenHash = sha256(req.body.refreshToken || "");
     const refreshed = await db.transaction(async (client) => {
       const found = await client.query(
-        `SELECT r.id,r.installation_id,u.id AS user_id,u.organization_id,u.role,u.status FROM refresh_tokens r JOIN users u ON u.id=r.user_id
+        `SELECT r.id,r.installation_id,r.client_type,u.id AS user_id,u.organization_id,u.role,u.status FROM refresh_tokens r JOIN users u ON u.id=r.user_id
          WHERE r.token_hash=$1 AND r.revoked_at IS NULL AND r.expires_at>now() FOR UPDATE OF r`, [tokenHash]
       );
       const row = found.rows[0];
       if (!row || row.status !== "active") throw Object.assign(new Error("Refresh token is invalid or already used"), { status: 401, code: "INVALID_REFRESH_TOKEN" });
       const rotated = randomToken(48);
       await client.query("UPDATE refresh_tokens SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL", [row.id]);
-      await client.query("INSERT INTO refresh_tokens(user_id,token_hash,installation_id,expires_at) VALUES($1,$2,$3,now()+interval '30 days')", [row.user_id, sha256(rotated), row.installation_id]);
+      const clientType = row.client_type || (row.installation_id ? "mobile" : "web");
+      await client.query("INSERT INTO refresh_tokens(user_id,token_hash,installation_id,client_type,expires_at) VALUES($1,$2,$3,$4,now()+interval '30 days')", [row.user_id, sha256(rotated), row.installation_id, clientType]);
       return { row, rotated };
     });
     const { row, rotated } = refreshed;
-    const clientType = row.installation_id ? "mobile" : "web";
+    const clientType = row.client_type || (row.installation_id ? "mobile" : "web");
     res.json({
       accessToken: issueAccessToken(authSecret, {
         sub: row.user_id, org: row.organization_id, role: row.role, clientType,
@@ -714,19 +718,23 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   }));
 
   app.post("/api/attendance/sessions/:id/mark", authenticate, roles("student"), asyncRoute(async (req, res) => {
-    if (req.authClaims.clientType !== "mobile") return res.status(403).json({ error: "MOBILE_APP_REQUIRED", message: "Attendance can only be marked from the registered mobile app." });
+    const webBluetooth = req.authClaims.clientType === "web_ble";
+    if (req.authClaims.clientType !== "mobile" && !webBluetooth) return res.status(403).json({ error: "BLUETOOTH_CLIENT_REQUIRED", message: "Attendance requires the registered Android app or a supported Web Bluetooth browser." });
     const installationId = String(req.body.installationId || "");
     if (!installationId || req.authClaims.installationId !== installationId) return res.status(403).json({ error: "DEVICE_TOKEN_MISMATCH" });
     const samples = Array.isArray(req.body.rssiSamples) ? req.body.rssiSamples.map(Number) : [];
-    if (samples.length < 3 || samples.length > 20 || samples.some((value) => !Number.isInteger(value) || value < -127 || value > -10)) {
+    if (!webBluetooth && (samples.length < 3 || samples.length > 20 || samples.some((value) => !Number.isInteger(value) || value < -127 || value > -10))) {
       return res.status(422).json({ error: "INVALID_SIGNAL_SAMPLES", message: "At least three valid Bluetooth signal samples are required" });
     }
-    const signal = median(samples);
-    if (signal < minimumRssi) return res.status(422).json({ error: "WEAK_OR_MISSING_SIGNAL", medianRssi: signal });
+    const signal = webBluetooth ? null : median(samples);
+    if (!webBluetooth && signal < minimumRssi) return res.status(422).json({ error: "WEAK_OR_MISSING_SIGNAL", medianRssi: signal });
+    const beaconToken = String(req.body.beaconToken || "").trim().toLowerCase();
+    if (webBluetooth && !/^[a-f0-9]{16}$/.test(beaconToken)) return res.status(422).json({ error: "INVALID_BLUETOOTH_PROOF" });
     const result = await db.transaction(async (client) => {
       const sessionResult = await client.query("SELECT * FROM attendance_sessions WHERE id=$1 FOR UPDATE", [req.params.id]);
       const session = sessionResult.rows[0];
       if (!session || session.status !== "active" || new Date(session.ends_at).getTime() <= Date.now()) throw Object.assign(new Error("Attendance window is closed"), { status: 410, code: "SESSION_CLOSED" });
+      if (webBluetooth && session.beacon_token_hash !== sha256(beaconToken)) throw Object.assign(new Error("The Bluetooth proof does not belong to this attendance session"), { status: 403, code: "BLUETOOTH_PROOF_MISMATCH" });
       const enrolled = await client.query("SELECT 1 FROM student_enrollments WHERE offering_id=$1 AND student_id=$2", [session.offering_id, req.user.id]);
       if (!enrolled.rowCount) throw Object.assign(new Error("You are not enrolled in this class"), { status: 403, code: "NOT_ON_ROSTER" });
       const device = await client.query("SELECT 1 FROM student_devices WHERE student_id=$1 AND installation_id=$2 AND status='active'", [req.user.id, installationId]);
@@ -741,11 +749,11 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       if (overlap.rowCount) throw Object.assign(new Error("You are already present in an overlapping class"), { status: 409, code: "OVERLAPPING_ATTENDANCE" });
       const inserted = await client.query(
         `INSERT INTO attendance_records(session_id,student_id,status,method,median_rssi,marked_by)
-         VALUES($1,$2,'present','barcode_ble',$3,$2)
-         ON CONFLICT(session_id,student_id) DO UPDATE SET status='present'
-         RETURNING *`, [session.id, req.user.id, signal]
+         VALUES($1,$2,'present',$4,$3,$2)
+         ON CONFLICT(session_id,student_id) DO UPDATE SET status='present',method=EXCLUDED.method,median_rssi=EXCLUDED.median_rssi,marked_by=EXCLUDED.marked_by,marked_at=now(),reason=NULL
+         RETURNING *`, [session.id, req.user.id, signal, webBluetooth ? "barcode_web_ble" : "barcode_ble"]
       );
-      await audit(client, req, "ATTENDANCE_SELF_MARKED", "attendance_record", inserted.rows[0].id, null, { sessionId: session.id, method: "barcode_ble", medianRssi: signal });
+      await audit(client, req, "ATTENDANCE_SELF_MARKED", "attendance_record", inserted.rows[0].id, null, { sessionId: session.id, method: webBluetooth ? "barcode_web_ble" : "barcode_ble", medianRssi: signal });
       return inserted.rows[0];
     });
     res.status(201).json({ attendance: result });
