@@ -1,0 +1,14 @@
+{
+  "name": "AttenDesk — Harcourt Butler Technical University",
+  "short_name": "AttenDesk",
+  "description": "Bluetooth and ID-card verified classroom attendance.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

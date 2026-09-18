@@ -7,6 +7,8 @@
     <meta name="description" content="AttenDesk — secure Bluetooth and ID-card attendance for colleges." />
     <title>AttenDesk</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   </head>
   <body>
     <div class="motion-scene" aria-hidden="true">
@@ -33,16 +35,39 @@
       <section class="auth-panel">
         <a class="logo auth-panel-logo" href="/"><span class="logo-mark"><i></i><i></i><i></i></span>AttenDesk</a>
         <div id="login-card" class="auth-card">
-          <span class="eyebrow">College access</span><h2>Welcome back.</h2><p>Use your approved college email. We’ll send a secure one-time code.</p>
-          <form id="request-otp-form">
-            <label>College email<input id="login-email" type="email" placeholder="name@college.edu" required autocomplete="email" /></label>
-            <button class="primary" type="submit">Send login code <span>→</span></button>
+          <span class="eyebrow">College access</span><h2>Welcome back.</h2><p>Choose how you sign in to Harcourt Butler Technical University.</p>
+
+          <div class="role-tabs" role="tablist">
+            <button class="role-tab active" data-login-mode="student" role="tab">Student</button>
+            <button class="role-tab" data-login-mode="staff" role="tab">Teacher</button>
+            <button class="role-tab" data-login-mode="admin" role="tab">Admin</button>
+          </div>
+
+          <form id="student-login-form">
+            <label>Full name<input id="student-name" name="fullName" required autocomplete="name" placeholder="As printed on your ID card" /></label>
+            <label>Roll number<input id="student-roll" name="rollNumber" required inputmode="numeric" autocomplete="off" placeholder="250107010" /></label>
+            <button class="primary" type="submit">Sign in <span>&rarr;</span></button>
+            <p class="field-note">Attendance also needs Bluetooth and camera permission on this phone.</p>
+          </form>
+
+          <form id="staff-login-form" class="hidden">
+            <label>Username or college email<input id="staff-identifier" name="identifier" required autocomplete="username" placeholder="alakh" /></label>
+            <label>Password<input id="staff-password" name="password" type="password" required autocomplete="current-password" /></label>
+            <button class="primary" type="submit">Sign in <span>&rarr;</span></button>
+            <button class="text-button" type="button" data-action="use-otp">Sign in with an email code instead</button>
+          </form>
+
+          <form id="request-otp-form" class="hidden">
+            <label>College email<input id="login-email" type="email" placeholder="name@hbtu.ac.in" autocomplete="email" /></label>
+            <button class="primary" type="submit">Send login code <span>&rarr;</span></button>
+            <button class="text-button" type="button" data-action="use-password">Use a password instead</button>
           </form>
           <form id="verify-otp-form" class="hidden">
-            <label>Six-digit verification code<input id="login-otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required autocomplete="one-time-code" /></label>
-            <button class="primary" type="submit">Verify and continue <span>→</span></button>
+            <label>Six-digit verification code<input id="login-otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" autocomplete="one-time-code" /></label>
+            <button class="primary" type="submit">Verify and continue <span>&rarr;</span></button>
             <button class="text-button" type="button" data-action="change-email">Use another email</button>
           </form>
+
           <div id="auth-message" class="message hidden"></div>
           <div class="auth-divider"><span>New to AttenDesk?</span></div>
           <button class="secondary" data-action="open-register">Request an account</button>
@@ -54,7 +79,7 @@
           <span class="eyebrow">New account</span><h2>Join your college.</h2><p>Verify your college email, then an administrator will approve your details.</p>
           <form id="registration-form">
             <div class="field-grid"><label>Full name<input name="fullName" required /></label><label>Role<select name="role" id="register-role"><option value="student">Student</option><option value="teacher">Teacher</option></select></label></div>
-            <label>College email<input name="email" id="register-email" type="email" required placeholder="name@college.edu" /></label>
+            <label>College email<input name="email" id="register-email" type="email" required placeholder="name@hbtu.ac.in" /></label>
             <button class="text-button left" type="button" data-action="load-college">Load college options</button>
             <div id="student-fields">
               <div class="field-grid"><label>Roll number<input name="rollNumber" /></label><label>Branch<select name="branchId" id="register-branch"><option value="">Load college first</option></select></label></div>
@@ -76,7 +101,7 @@
       <aside class="sidebar">
         <a class="logo sidebar-logo" href="#"><span class="logo-mark"><i></i><i></i><i></i></span><span class="brand-copy">AttenDesk<small>Campus attendance</small></span></a>
         <button id="sidebar-close" type="button" aria-label="Close navigation">×</button>
-        <div class="workspace-chip"><span>AD</span><div><strong>College workspace</strong><small>Secure production</small></div></div>
+        <div class="workspace-chip"><span>AD</span><div><strong>Harcourt Butler Technical University</strong><small>Secure production</small></div></div>
         <span class="sidebar-label">Workspace</span>
         <nav id="nav"></nav>
         <div class="sidebar-bottom"><span class="status-dot"></span><div><strong>System operational</strong><small>Protected connection</small></div></div>

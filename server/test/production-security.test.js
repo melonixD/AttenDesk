@@ -78,16 +78,32 @@ test("production UI includes resilient loading and accessibility states", async 
   assert.match(demoHtml, /class="hero-orbit"/);
 });
 
-test("Vercel has a root Express export and CDN-ready public assets", async () => {
-  const [entry, packageJson, vercelConfig, html] = await Promise.all([
-    fs.readFile(new URL("../../index.js", import.meta.url), "utf8"),
-    fs.readFile(new URL("../../package.json", import.meta.url), "utf8"),
+test("Vercel routes every request to an /api function, which is what fixes the 404", async () => {
+  const [entry, vercelConfig, html] = await Promise.all([
+    fs.readFile(new URL("../../api/index.js", import.meta.url), "utf8"),
     fs.readFile(new URL("../../vercel.json", import.meta.url), "utf8"),
     fs.readFile(new URL("../../public/index.html", import.meta.url), "utf8")
   ]);
-  assert.match(entry, /import express from "express"/);
-  assert.match(entry, /export default app/);
-  assert.equal(JSON.parse(packageJson).dependencies.express, "^4.21.2");
-  assert.ok(Array.isArray(JSON.parse(vercelConfig).headers));
+  const config = JSON.parse(vercelConfig);
+  // Vercel only turns files under /api into Functions. A root-level export is
+  // never picked up, which is exactly why the previous release 404'd.
+  assert.match(entry, /createProductionApp/);
+  assert.match(entry, /export default/);
+  assert.ok(config.functions["api/index.js"], "api/index.js must be declared as a Function");
+  assert.match(config.functions["api/index.js"].includeFiles, /public/, "the static site must be bundled into the Function");
+  assert.ok(config.rewrites.some((rule) => rule.destination === "/api/index"), "traffic must be rewritten to the Function");
+  assert.ok(Array.isArray(config.headers));
   assert.match(html, /AttenDesk/);
+});
+
+test("the service worker never caches attendance traffic", async () => {
+  const worker = await fs.readFile(new URL("../../public/sw.js", import.meta.url), "utf8");
+  assert.match(worker, /pathname\.startsWith\('\/api\/'\)/);
+  assert.doesNotMatch(worker, /cache\.addAll\(\[[^\]]*\/api/);
+});
+
+test("no inline script survives the Content-Security-Policy", async () => {
+  const html = await fs.readFile(new URL("../../public/index.html", import.meta.url), "utf8");
+  // security.js sends script-src 'self', so an inline <script> would be blocked.
+  assert.doesNotMatch(html, /<script(?![^>]*\ssrc=)[^>]*>[\s\S]*?<\/script>/);
 });

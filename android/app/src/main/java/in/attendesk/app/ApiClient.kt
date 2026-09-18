@@ -102,9 +102,13 @@ class ApiClient(private val baseUrl: String) {
     fun session(sessionId: String): AttendanceSession =
         get("/api/attendance/sessions/$sessionId").toSession()
 
-    fun markAttendance(sessionId: String, barcode: String, installationId: String, rssi: List<Int>) {
+    fun markAttendance(sessionId: String, barcode: String, installationId: String, rssi: List<Int>, beaconToken: String) {
         post("/api/attendance/sessions/$sessionId/mark", JSONObject().apply {
-            put("barcode", barcode); put("installationId", installationId); put("rssiSamples", JSONArray(rssi))
+            put("barcode", barcode); put("installationId", installationId)
+            put("rssiSamples", JSONArray(rssi))
+            // The server now requires proof of which beacon was actually heard.
+            // For an ESP32 room this is the rotating code and it expires in 30s.
+            put("beaconToken", beaconToken)
         })
     }
 

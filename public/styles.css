@@ -585,3 +585,74 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   .depth-surface.depth-surface, .signal-art.depth-surface.depth-surface, .visual-copy { transform: none !important; }
 }
+
+/* ===========================================================================
+   AttenDesk v2 — credential login, live attendance, beacon registry
+   Animations use transform/opacity only and are disabled under
+   prefers-reduced-motion, so they can never sit between a student and a scan.
+   ========================================================================= */
+
+.role-tabs { display: flex; gap: 6px; padding: 5px; margin-bottom: 20px; background: #f1f5f9; border-radius: 12px; }
+.role-tab { flex: 1; padding: 9px 10px; font: inherit; font-size: .86rem; font-weight: 600; color: #64748b;
+  background: transparent; border: 0; border-radius: 9px; cursor: pointer; transition: color .18s ease, background .18s ease; }
+.role-tab.active { color: #0f172a; background: #fff; box-shadow: 0 1px 3px rgba(15, 23, 42, .1); }
+.role-tab:hover:not(.active) { color: #0f172a; }
+
+.field-note { margin: 12px 0 0; font-size: .78rem; line-height: 1.5; color: #64748b; }
+.field-label { display: block; margin: 16px 0 8px; font-size: .8rem; font-weight: 600; color: #475569; }
+.stacked-actions { display: grid; gap: 10px; margin-top: 20px; }
+.key-block { padding: 14px; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem; color: #0f172a; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 10px; }
+
+/* --- duration picker ----------------------------------------------------- */
+.duration-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(74px, 1fr)); gap: 8px; margin-bottom: 4px; }
+.duration-option { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  padding: 12px 6px; text-align: center; cursor: pointer; background: #fff; border: 1.5px solid #e2e8f0; border-radius: 12px;
+  transition: border-color .16s ease, transform .16s ease; }
+.duration-option:hover { border-color: #93c5fd; transform: translateY(-1px); }
+.duration-option.selected { border-color: #2563eb; background: #eff6ff; }
+.duration-option input { position: absolute; opacity: 0; pointer-events: none; }
+.duration-option strong { font-size: 1.08rem; color: #0f172a; }
+.duration-option small { font-size: .7rem; color: #64748b; }
+
+/* --- live attendance ----------------------------------------------------- */
+.live-header { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between;
+  padding: 26px 28px; margin-bottom: 14px; color: #fff; background: linear-gradient(135deg, #1d4ed8, #2563eb); border-radius: 18px; }
+.live-header.live-ended { background: linear-gradient(135deg, #334155, #475569); }
+.live-header h2 { margin: 6px 0 4px; font-size: 1.5rem; color: #fff; }
+.live-header p { margin: 0; font-size: .86rem; color: rgba(255, 255, 255, .8); }
+.live-timer, .live-count { text-align: right; }
+.live-timer strong, .live-count strong { display: block; font-size: 2rem; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.live-timer small, .live-count small { font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; color: rgba(255, 255, 255, .72); }
+.live-progress { height: 6px; margin-bottom: 22px; overflow: hidden; background: #e2e8f0; border-radius: 999px; }
+.live-progress i { display: block; height: 100%; background: #2563eb; border-radius: 999px; transition: width .4s cubic-bezier(.22, 1, .36, 1); }
+.count-bump { animation: count-bump .38s cubic-bezier(.22, 1, .36, 1); }
+@keyframes count-bump { 0% { transform: scale(1); } 45% { transform: scale(1.16); } 100% { transform: scale(1); } }
+
+.live-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.inline-search { min-width: 180px; padding: 8px 12px; font: inherit; font-size: .84rem;
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; }
+.inline-search:focus { border-color: #2563eb; outline: none; }
+
+.roster-list { display: grid; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.roster-row { display: grid; grid-template-columns: 26px 1fr auto auto; gap: 12px; align-items: center;
+  padding: 10px 12px; background: #fff; border: 1px solid #eef2f7; border-radius: 11px; }
+.roster-row.is-present { background: #f0f9f4; border-color: #bbf7d0; }
+.roster-mark { display: grid; width: 22px; height: 22px; place-items: center; color: #fff; background: #e2e8f0; border-radius: 50%; }
+.roster-row.is-present .roster-mark { background: #16a34a; }
+.roster-identity strong { display: block; font-size: .9rem; color: #0f172a; }
+.roster-identity small { font-size: .76rem; color: #64748b; }
+.roster-method { font-size: .76rem; color: #64748b; }
+@media (max-width: 640px) {
+  .roster-row { grid-template-columns: 22px 1fr auto; }
+  .roster-method { display: none; }
+  .live-header { padding: 20px; }
+  .live-timer strong, .live-count strong { font-size: 1.55rem; }
+}
+
+.primary.compact { padding: 8px 15px; font-size: .82rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .count-bump { animation: none; }
+  .live-progress i, .duration-option { transition: none; }
+}

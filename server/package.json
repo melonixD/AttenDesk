@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/production-server.js",
-    "start:demo": "node src/server.js",
     "migrate": "node scripts/migrate.js",
-    "test": "node --test"
+    "seed:hbtu": "node scripts/seed-hbtu.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

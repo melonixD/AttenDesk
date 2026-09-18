@@ -78,3 +78,63 @@ export function createRateLimiter({ windowMs = 60_000, max = 60 } = {}) {
 }
 
 export const ipDigest = (secret, ip) => crypto.createHmac("sha256", secret).update(ip || "unknown").digest("hex");
+
+/* ---------------------------------------------------------------------------
+ * Passwords: scrypt with a per-user salt. No external dependency.
+ * Stored as  scrypt$N$r$p$<salt-b64>$<hash-b64>
+ * ------------------------------------------------------------------------- */
+const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 64 };
+
+export function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const derived = crypto.scryptSync(String(password), salt, SCRYPT.keylen, { N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p, maxmem: 64 * 1024 * 1024 });
+  return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString("base64")}$${derived.toString("base64")}`;
+}
+
+export function verifyPassword(password, stored) {
+  if (!stored || typeof stored !== "string") return false;
+  const parts = stored.split("$");
+  if (parts.length !== 6 || parts[0] !== "scrypt") return false;
+  const [, n, r, p, saltB64, hashB64] = parts;
+  try {
+    const salt = Buffer.from(saltB64, "base64");
+    const expected = Buffer.from(hashB64, "base64");
+    const derived = crypto.scryptSync(String(password), salt, expected.length, { N: Number(n), r: Number(r), p: Number(p), maxmem: 64 * 1024 * 1024 });
+    return derived.length === expected.length && crypto.timingSafeEqual(derived, expected);
+  } catch {
+    return false;
+  }
+}
+
+export function passwordProblem(password) {
+  const value = String(password || "");
+  if (value.length < 8) return "Password must contain at least 8 characters";
+  if (value.length > 200) return "Password is too long";
+  if (!/[a-zA-Z]/.test(value) || !/[0-9]/.test(value)) return "Password must contain both letters and numbers";
+  return null;
+}
+
+/* ---------------------------------------------------------------------------
+ * Rotating beacon codes.
+ *
+ * A session has one long-lived token (used by the legacy Android teacher
+ * beacon) and a code that changes every ROTATION_SECONDS. The ESP32 polls the
+ * API, receives the current code and advertises only that. A code copied out
+ * of the room is therefore worthless within one rotation window, which is what
+ * stops a student from forwarding it to somebody sitting at home.
+ * ------------------------------------------------------------------------- */
+export const ROTATION_SECONDS = 30;
+
+export const rotationWindow = (at = Date.now()) => Math.floor(at / 1000 / ROTATION_SECONDS);
+
+export const rotatingCode = (secret, sessionId, window = rotationWindow()) =>
+  crypto.createHmac("sha256", secret).update(`beacon:${sessionId}:${window}`).digest("hex").slice(0, 16);
+
+/** Codes a student may legitimately present right now: this window and the previous one. */
+export const acceptableRotatingCodes = (secret, sessionId, at = Date.now()) => {
+  const window = rotationWindow(at);
+  return [rotatingCode(secret, sessionId, window), rotatingCode(secret, sessionId, window - 1)];
+};
+
+export const secondsUntilRotation = (at = Date.now()) =>
+  ROTATION_SECONDS - Math.floor((at / 1000) % ROTATION_SECONDS);

@@ -472,7 +472,7 @@ class MainActivity : Activity() {
     private fun submitStudentAttendance(session: AttendanceSession, signal: NearbySignal, barcode: String) {
         showLoading("Verifying your ID and classroom…")
         io.execute {
-            runCatching { api.markAttendance(session.id, barcode, installationId, signal.samples) }
+            runCatching { api.markAttendance(session.id, barcode, installationId, signal.samples, signal.token) }
                 .onSuccess {
                     ble.stopStudentScan()
                     main.post { showSuccess("You're marked present", "${session.subject} · Room ${session.roomId}\nBarcode + Bluetooth verified") { showStudentLoading() } }

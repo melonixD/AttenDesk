@@ -3,12 +3,15 @@ import express from "express";
 import { fileURLToPath } from "node:url";
 import { attendancePdf, attendanceWorkbook } from "./reports.js";
 import { createMailer } from "./mailer.js";
-import { createRateLimiter, ipDigest, issueAccessToken, keyedHash, numericOtp, otpHash, randomToken, securityHeaders, sha256, verifyAccessToken } from "./security.js";
+import { ROTATION_SECONDS, acceptableRotatingCodes, createRateLimiter, hashPassword, ipDigest, issueAccessToken, keyedHash, numericOtp, otpHash, passwordProblem, randomToken, rotatingCode, secondsUntilRotation, securityHeaders, sha256, verifyAccessToken, verifyPassword } from "./security.js";
 
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const cleanEmail = (value) => String(value || "").trim().toLowerCase();
 const cleanRoom = (value) => String(value || "").trim().replace(/\s+/g, " ");
 const required = (body, fields) => fields.filter((field) => !String(body[field] ?? "").trim());
+const cleanUsername = (value) => String(value || "").trim().toLowerCase();
+const cleanRoll = (value) => String(value || "").trim().toUpperCase();
+const normaliseName = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z]+/g, " ").trim();
 const median = (values = []) => {
   const sorted = values.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
   if (!sorted.length) return null;
@@ -23,11 +26,16 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   if (!authSecret || !otpSecret || !barcodePepper) throw new Error("AUTH_SECRET, OTP_SECRET and BARCODE_PEPPER are required");
   if ([authSecret, otpSecret, barcodePepper].some((value) => value.length < 32)) throw new Error("Security secrets must each contain at least 32 characters");
   if (new Set([authSecret, otpSecret, barcodePepper]).size !== 3) throw new Error("AUTH_SECRET, OTP_SECRET and BARCODE_PEPPER must be different");
-  const enforceTimetable = process.env.ENFORCE_TIMETABLE === "true" || (process.env.ENFORCE_TIMETABLE !== "false" && process.env.NODE_ENV === "production");
+  // HBTU pilot: teachers may start unscheduled sessions, so timetable
+  // enforcement is opt-in rather than automatic in production.
+  const enforceTimetable = process.env.ENFORCE_TIMETABLE === "true";
+  const requireRegisteredClassroom = process.env.REQUIRE_REGISTERED_CLASSROOM === "true";
   const configuredGraceMinutes = Number(process.env.TIMETABLE_GRACE_MINUTES);
   const timetableGraceMinutes = Math.max(0, Math.min(60, Number.isFinite(configuredGraceMinutes) ? configuredGraceMinutes : 10));
   const configuredMinRssi = Number(process.env.MIN_RSSI);
   const minimumRssi = Number.isFinite(configuredMinRssi) ? Math.max(-127, Math.min(-10, configuredMinRssi)) : -92;
+  const studentPasswordRequired = process.env.STUDENT_REQUIRE_PASSWORD === "true";
+  const beaconOfflineSeconds = Math.max(15, Number(process.env.BEACON_OFFLINE_SECONDS) || 45);
 
   app.set("trust proxy", 1);
   app.disable("x-powered-by");
@@ -39,7 +47,9 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     next();
   });
   app.use("/api/auth", createRateLimiter({ max: 12, windowMs: 10 * 60_000 }));
-  app.use("/api", createRateLimiter({ max: 180, windowMs: 60_000 }));
+  app.use("/api/beacon", createRateLimiter({ max: 1200, windowMs: 60_000 }));
+  const generalApiLimiter = createRateLimiter({ max: 180, windowMs: 60_000 });
+  app.use("/api", (req, res, next) => (req.path.startsWith("/beacon/") ? next() : generalApiLimiter(req, res, next)));
 
   const authenticate = asyncRoute(async (req, res, next) => {
     const raw = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
@@ -225,6 +235,108 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     await db.query("INSERT INTO refresh_tokens(user_id,token_hash,installation_id,client_type,expires_at) VALUES($1,$2,$3,$4,now()+interval '30 days')", [user.id, sha256(refreshToken), deviceBoundClient ? installationId : null, clientType]);
     await db.query("UPDATE users SET last_login_at=now() WHERE id=$1", [user.id]);
     res.json({ accessToken, refreshToken, expiresIn: 900, user });
+  }));
+
+  /* -------------------------------------------------------------------------
+   * Credential login.
+   *
+   * Admins and teachers sign in with a username (or college email) plus a
+   * password. Students sign in with their full name plus roll number, as
+   * specified for the HBTU pilot. See docs/AUTH.md for why the student mode is
+   * the weakest link in the system and what to do about it.
+   * ---------------------------------------------------------------------- */
+  const issueSession = async ({ req, res, user, requestedClientType, installationId, deviceName, platform }) => {
+    const clientType = user.role === "student"
+      ? (requestedClientType === "web_ble" ? "web_ble" : requestedClientType === "mobile" ? "mobile" : "web")
+      : (requestedClientType === "mobile" ? "mobile" : "web");
+    const deviceBoundClient = user.role === "student" && (clientType === "mobile" || clientType === "web_ble");
+    if (deviceBoundClient) {
+      if (!installationId) return res.status(400).json({ error: "INSTALLATION_ID_REQUIRED" });
+      const active = await db.query("SELECT * FROM student_devices WHERE student_id=$1 AND status='active'", [user.id]);
+      if (!active.rowCount) {
+        const resolvedPlatform = clientType === "web_ble" ? "web" : platform === "ios" ? "ios" : "android";
+        await db.query(
+          "INSERT INTO student_devices(student_id,installation_id,device_name,platform,status,approved_at) VALUES($1,$2,$3,$4,'active',now())",
+          [user.id, installationId, deviceName || (clientType === "web_ble" ? "Web Bluetooth browser" : "Android phone"), resolvedPlatform]
+        );
+      } else if (active.rows[0].installation_id !== installationId) {
+        const deviceChangeToken = issueAccessToken(authSecret, { sub: user.id, org: user.organization_id, role: "device_change" }, 600);
+        return res.status(403).json({ error: "DEVICE_CHANGE_REQUIRED", message: "This account is linked to another phone or browser. Ask an administrator to approve this device.", deviceChangeToken });
+      }
+      await db.query("UPDATE student_devices SET last_seen_at=now() WHERE student_id=$1 AND installation_id=$2 AND status='active'", [user.id, installationId]);
+    }
+    const accessToken = issueAccessToken(authSecret, {
+      sub: user.id, org: user.organization_id, role: user.role, clientType,
+      ...(deviceBoundClient ? { installationId } : {})
+    });
+    const refreshToken = randomToken(48);
+    await db.query(
+      "INSERT INTO refresh_tokens(user_id,token_hash,installation_id,client_type,expires_at) VALUES($1,$2,$3,$4,now()+interval '30 days')",
+      [user.id, sha256(refreshToken), deviceBoundClient ? installationId : null, clientType]
+    );
+    await db.query("UPDATE users SET last_login_at=now() WHERE id=$1", [user.id]);
+    const { password_hash, ...safeUser } = user;
+    return res.json({ accessToken, refreshToken, expiresIn: 900, user: safeUser });
+  };
+
+  app.post("/api/auth/login", asyncRoute(async (req, res) => {
+    const identifier = String(req.body.identifier || req.body.username || req.body.email || "").trim();
+    const password = String(req.body.password || "");
+    if (!identifier || !password) return res.status(400).json({ error: "MISSING_CREDENTIALS", message: "Enter your username and password" });
+    const byEmail = identifier.includes("@");
+    const organization = byEmail
+      ? await organizationForEmail(cleanEmail(identifier))
+      : (await db.query("SELECT * FROM organizations ORDER BY created_at LIMIT 1")).rows[0];
+    if (!organization) return res.status(403).json({ error: "UNKNOWN_COLLEGE", message: "This college is not configured yet" });
+    const found = await db.query(
+      `SELECT id,organization_id,email,username,full_name,role,status,password_hash FROM users
+       WHERE organization_id=$1
+         AND (lower(email)=lower($2) OR lower(username)=lower($2) OR lower(trim(full_name))=lower(trim($2)))
+       ORDER BY (lower(username)=lower($2)) DESC LIMIT 1`,
+      [organization.id, identifier]
+    );
+    const user = found.rows[0];
+    // Always spend the same work whether or not the account exists.
+    const ok = verifyPassword(password, user?.password_hash || "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA==$AAAA");
+    if (!user || !ok) return res.status(401).json({ error: "INVALID_CREDENTIALS", message: "Username or password is incorrect" });
+    if (user.role === "student") return res.status(403).json({ error: "USE_STUDENT_LOGIN", message: "Students sign in with their name and roll number" });
+    if (user.status !== "active") return res.status(403).json({ error: "ACCOUNT_NOT_ACTIVE", message: "This account is not active yet" });
+    return issueSession({ req, res, user, requestedClientType: req.body.clientType, installationId: String(req.body.installationId || "").trim(), deviceName: req.body.deviceName, platform: req.body.platform });
+  }));
+
+  app.post("/api/auth/student-login", asyncRoute(async (req, res) => {
+    const fullName = String(req.body.fullName || "").trim();
+    const rollNumber = cleanRoll(req.body.rollNumber);
+    if (!fullName || !rollNumber) return res.status(400).json({ error: "MISSING_CREDENTIALS", message: "Enter your full name and roll number" });
+    const found = await db.query(
+      `SELECT u.id,u.organization_id,u.email,u.username,u.full_name,u.role,u.status,u.password_hash
+       FROM students s JOIN users u ON u.id=s.user_id
+       WHERE upper(trim(s.roll_number))=$1 AND u.role='student'`,
+      [rollNumber]
+    );
+    const user = found.rows[0];
+    if (!user || normaliseName(user.full_name) !== normaliseName(fullName)) {
+      return res.status(401).json({ error: "INVALID_CREDENTIALS", message: "Name and roll number do not match a registered student" });
+    }
+    if (user.status !== "active") return res.status(403).json({ error: "ACCOUNT_NOT_ACTIVE", message: "Your account is waiting for administrator approval" });
+    if (studentPasswordRequired) {
+      if (!verifyPassword(String(req.body.password || ""), user.password_hash)) {
+        return res.status(401).json({ error: "INVALID_CREDENTIALS", message: "Incorrect password" });
+      }
+    }
+    return issueSession({ req, res, user, requestedClientType: req.body.clientType || "web_ble", installationId: String(req.body.installationId || "").trim(), deviceName: req.body.deviceName, platform: req.body.platform });
+  }));
+
+  app.post("/api/auth/set-password", authenticate, asyncRoute(async (req, res) => {
+    const problem = passwordProblem(req.body.newPassword);
+    if (problem) return res.status(400).json({ error: "WEAK_PASSWORD", message: problem });
+    const current = await db.query("SELECT password_hash FROM users WHERE id=$1", [req.user.id]);
+    if (current.rows[0]?.password_hash && !verifyPassword(String(req.body.currentPassword || ""), current.rows[0].password_hash)) {
+      return res.status(403).json({ error: "CURRENT_PASSWORD_INCORRECT", message: "Your current password is incorrect" });
+    }
+    await db.query("UPDATE users SET password_hash=$1, password_set_at=now(), updated_at=now() WHERE id=$2", [hashPassword(req.body.newPassword), req.user.id]);
+    await db.query("UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [req.user.id]);
+    res.json({ message: "Password updated. Sign in again on your other devices." });
   }));
 
   app.post("/api/auth/device-change-request", asyncRoute(async (req, res) => {
@@ -660,6 +772,19 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     if (!offering.rowCount) return res.status(403).json({ error: "CLASS_NOT_ASSIGNED" });
     const room = cleanRoom(req.body.room || offering.rows[0].default_room);
     if (!room) return res.status(400).json({ error: "ROOM_REQUIRED" });
+    // Resolve the registered classroom and its enabled ESP32 beacon, if any.
+    const classroom = await db.query(
+      "SELECT id, room_number, min_rssi FROM classrooms WHERE organization_id=$1 AND lower(trim(room_number))=lower(trim($2)) AND active=true",
+      [req.user.organization_id, room]
+    );
+    const classroomId = classroom.rows[0]?.id || null;
+    if (requireRegisteredClassroom && !classroomId) {
+      return res.status(400).json({ error: "CLASSROOM_NOT_REGISTERED", message: `Room ${room} is not in the classroom registry. Ask an administrator to add it.` });
+    }
+    const beaconRow = classroomId
+      ? await db.query("SELECT id, beacon_code, label, last_seen_at, status FROM beacons WHERE classroom_id=$1 AND enabled=true LIMIT 1", [classroomId])
+      : { rows: [] };
+    const beaconId = beaconRow.rows[0]?.id || null;
     if (enforceTimetable) {
       const scheduled = await db.query(
         `SELECT t.id FROM timetable_entries t JOIN course_offerings o ON o.id=t.offering_id JOIN organizations org ON org.id=o.organization_id
@@ -684,25 +809,64 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       );
       if (roomInUse.rowCount) throw Object.assign(new Error(`Room ${room} already has an active attendance session`), { status: 409, code: "ROOM_ALREADY_ACTIVE", sessionId: roomInUse.rows[0].id });
       const created = await client.query(
-        `INSERT INTO attendance_sessions(offering_id,teacher_id,room,beacon_token_hash,ends_at)
-         VALUES($1,$2,$3,$4,now()+($5 || ' seconds')::interval) RETURNING id`,
-        [req.body.offeringId, req.user.id, room, sha256(beaconToken), durationSeconds]
+        `INSERT INTO attendance_sessions(offering_id,teacher_id,room,beacon_token_hash,ends_at,classroom_id,beacon_id,organization_id)
+         VALUES($1,$2,$3,$4,now()+($5 || ' seconds')::interval,$6,$7,$8) RETURNING id`,
+        [req.body.offeringId, req.user.id, room, sha256(beaconToken), durationSeconds, classroomId, beaconId, req.user.organization_id]
       );
       await audit(client, req, "ATTENDANCE_SESSION_STARTED", "attendance_session", created.rows[0].id, null, { offeringId: req.body.offeringId, room, durationSeconds });
       return created;
     });
     const session = await sessionDetails(result.rows[0].id, true);
-    res.status(201).json({ ...session, beaconToken });
+    const beacon = beaconRow.rows[0] || null;
+    const beaconOnline = Boolean(beacon?.last_seen_at && Date.now() - new Date(beacon.last_seen_at).getTime() < beaconOfflineSeconds * 1000);
+    res.status(201).json({
+      ...session,
+      beaconToken,
+      rotationSeconds: ROTATION_SECONDS,
+      beacon: beacon ? { id: beacon.id, code: beacon.beacon_code, label: beacon.label, online: beaconOnline } : null,
+      beaconWarning: beacon
+        ? (beaconOnline ? null : `The ${beacon.label} beacon has not reported in recently. Students may not be able to detect this room.`)
+        : `Room ${room} has no ESP32 beacon registered. Students can only mark attendance if a teacher phone beacon is broadcasting.`
+    });
   }));
 
-  app.get("/api/attendance/beacons/:token", authenticate, roles("student"), asyncRoute(async (req, res) => {
-    const result = await db.query(
+  /* -------------------------------------------------------------------------
+   * Resolve a code observed over Bluetooth into a session the student may join.
+   *
+   * Two proofs are accepted:
+   *   rotating_beacon - the code an ESP32 is advertising right now. It changes
+   *                     every ROTATION_SECONDS, so a code forwarded off campus
+   *                     stops working almost immediately.
+   *   session_token   - the long-lived token a legacy Android teacher-phone
+   *                     beacon advertises. Kept for backwards compatibility.
+   * Either way the lookup is filtered by enrollment, so a code that leaks
+   * through a wall from the class next door resolves to nothing.
+   * ---------------------------------------------------------------------- */
+  const resolveBeaconCode = async (rawCode, studentId) => {
+    const code = String(rawCode || "").trim().toLowerCase();
+    if (!/^[a-f0-9]{16}$/.test(code)) return null;
+    const rotating = await db.query(
+      `SELECT a.id FROM attendance_sessions a JOIN student_enrollments e ON e.offering_id=a.offering_id
+       WHERE a.status='active' AND a.ends_at>now() AND e.student_id=$1`,
+      [studentId]
+    );
+    for (const row of rotating.rows) {
+      if (acceptableRotatingCodes(authSecret, row.id).includes(code)) return { sessionId: row.id, proof: "rotating_beacon" };
+    }
+    const legacy = await db.query(
       `SELECT a.id FROM attendance_sessions a JOIN student_enrollments e ON e.offering_id=a.offering_id
        WHERE a.beacon_token_hash=$1 AND a.status='active' AND a.ends_at>now() AND e.student_id=$2`,
-      [sha256(req.params.token), req.user.id]
+      [sha256(code), studentId]
     );
-    if (!result.rowCount) return res.status(404).json({ error: "NO_ELIGIBLE_ACTIVE_SESSION" });
-    res.json(await sessionDetails(result.rows[0].id));
+    if (legacy.rowCount) return { sessionId: legacy.rows[0].id, proof: "session_token" };
+    return null;
+  };
+
+  app.get("/api/attendance/beacons/:token", authenticate, roles("student"), asyncRoute(async (req, res) => {
+    const match = await resolveBeaconCode(req.params.token, req.user.id);
+    if (!match) return res.status(404).json({ error: "NO_ELIGIBLE_ACTIVE_SESSION", message: "That classroom beacon does not match a class you are enrolled in right now." });
+    const session = await sessionDetails(match.sessionId);
+    res.json({ ...session, proof: match.proof });
   }));
 
   app.get("/api/attendance/sessions/:id", authenticate, roles("teacher", "student", "admin"), asyncRoute(async (req, res) => {
@@ -729,12 +893,25 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const signal = webBluetooth ? null : median(samples);
     if (!webBluetooth && signal < minimumRssi) return res.status(422).json({ error: "WEAK_OR_MISSING_SIGNAL", medianRssi: signal });
     const beaconToken = String(req.body.beaconToken || "").trim().toLowerCase();
-    if (webBluetooth && !/^[a-f0-9]{16}$/.test(beaconToken)) return res.status(422).json({ error: "INVALID_BLUETOOTH_PROOF" });
+    // Every client must present a Bluetooth proof. Web clients have no RSSI, so
+    // the proof is the only evidence of presence and must be the *rotating*
+    // code wherever an ESP32 beacon is serving the room.
+    if (!/^[a-f0-9]{16}$/.test(beaconToken)) return res.status(422).json({ error: "INVALID_BLUETOOTH_PROOF", message: "No valid classroom beacon code was captured." });
     const result = await db.transaction(async (client) => {
       const sessionResult = await client.query("SELECT * FROM attendance_sessions WHERE id=$1 FOR UPDATE", [req.params.id]);
       const session = sessionResult.rows[0];
       if (!session || session.status !== "active" || new Date(session.ends_at).getTime() <= Date.now()) throw Object.assign(new Error("Attendance window is closed"), { status: 410, code: "SESSION_CLOSED" });
-      if (webBluetooth && session.beacon_token_hash !== sha256(beaconToken)) throw Object.assign(new Error("The Bluetooth proof does not belong to this attendance session"), { status: 403, code: "BLUETOOTH_PROOF_MISMATCH" });
+      const rotatingMatch = acceptableRotatingCodes(authSecret, session.id).includes(beaconToken);
+      const legacyMatch = session.beacon_token_hash === sha256(beaconToken);
+      if (!rotatingMatch && !legacyMatch) {
+        throw Object.assign(new Error("That classroom beacon code is expired or belongs to another class. Move closer and scan again."), { status: 403, code: "BLUETOOTH_PROOF_MISMATCH" });
+      }
+      // A rotating code proves presence within the last 60 seconds. A static
+      // token does not, so when the room has a registered ESP32 we refuse it.
+      if (!rotatingMatch && session.beacon_id) {
+        throw Object.assign(new Error("This room uses a rotating classroom beacon. Refresh the Bluetooth connection and try again."), { status: 403, code: "STALE_BEACON_PROOF" });
+      }
+      const proof = rotatingMatch ? "rotating_beacon" : "session_token";
       const enrolled = await client.query("SELECT 1 FROM student_enrollments WHERE offering_id=$1 AND student_id=$2", [session.offering_id, req.user.id]);
       if (!enrolled.rowCount) throw Object.assign(new Error("You are not enrolled in this class"), { status: 403, code: "NOT_ON_ROSTER" });
       const device = await client.query("SELECT 1 FROM student_devices WHERE student_id=$1 AND installation_id=$2 AND status='active'", [req.user.id, installationId]);
@@ -748,12 +925,12 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       );
       if (overlap.rowCount) throw Object.assign(new Error("You are already present in an overlapping class"), { status: 409, code: "OVERLAPPING_ATTENDANCE" });
       const inserted = await client.query(
-        `INSERT INTO attendance_records(session_id,student_id,status,method,median_rssi,marked_by)
-         VALUES($1,$2,'present',$4,$3,$2)
-         ON CONFLICT(session_id,student_id) DO UPDATE SET status='present',method=EXCLUDED.method,median_rssi=EXCLUDED.median_rssi,marked_by=EXCLUDED.marked_by,marked_at=now(),reason=NULL
-         RETURNING *`, [session.id, req.user.id, signal, webBluetooth ? "barcode_web_ble" : "barcode_ble"]
+        `INSERT INTO attendance_records(session_id,student_id,status,method,median_rssi,marked_by,proof)
+         VALUES($1,$2,'present',$4,$3,$2,$5)
+         ON CONFLICT(session_id,student_id) DO UPDATE SET status='present',method=EXCLUDED.method,median_rssi=EXCLUDED.median_rssi,marked_by=EXCLUDED.marked_by,proof=EXCLUDED.proof,marked_at=now(),reason=NULL
+         RETURNING *`, [session.id, req.user.id, signal, webBluetooth ? "barcode_web_ble" : "barcode_ble", proof]
       );
-      await audit(client, req, "ATTENDANCE_SELF_MARKED", "attendance_record", inserted.rows[0].id, null, { sessionId: session.id, method: webBluetooth ? "barcode_web_ble" : "barcode_ble", medianRssi: signal });
+      await audit(client, req, "ATTENDANCE_SELF_MARKED", "attendance_record", inserted.rows[0].id, null, { sessionId: session.id, method: webBluetooth ? "barcode_web_ble" : "barcode_ble", medianRssi: signal, proof });
       return inserted.rows[0];
     });
     res.status(201).json({ attendance: result });
@@ -769,9 +946,9 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       if (!allowed.rowCount) throw Object.assign(new Error("Student or session not found"), { status: 404, code: "NOT_FOUND" });
       const before = await client.query("SELECT * FROM attendance_records WHERE session_id=$1 AND student_id=$2", [req.params.id, req.body.studentId]);
       const inserted = await client.query(
-        `INSERT INTO attendance_records(session_id,student_id,status,method,marked_by,reason)
-         VALUES($1,$2,$3,'manual',$4,$5)
-         ON CONFLICT(session_id,student_id) DO UPDATE SET status=EXCLUDED.status,method='manual',marked_by=EXCLUDED.marked_by,reason=EXCLUDED.reason,marked_at=now()
+        `INSERT INTO attendance_records(session_id,student_id,status,method,marked_by,reason,proof)
+         VALUES($1,$2,$3,'manual',$4,$5,'manual')
+         ON CONFLICT(session_id,student_id) DO UPDATE SET status=EXCLUDED.status,method='manual',marked_by=EXCLUDED.marked_by,reason=EXCLUDED.reason,proof='manual',marked_at=now()
          RETURNING *`, [req.params.id, req.body.studentId, req.body.status === "absent" ? "absent" : "present", req.user.id, String(req.body.reason).trim()]
       );
       await audit(client, req, "ATTENDANCE_MANUAL_OVERRIDE", "attendance_record", inserted.rows[0].id, before.rows[0] || null, inserted.rows[0]);
@@ -780,14 +957,68 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     res.json({ attendance: result });
   }));
 
+  /**
+   * Closing a session writes an explicit 'absent' row for every enrolled
+   * student who did not mark. Absence becomes a stored fact rather than
+   * something inferred by a later query.
+   */
+  const finaliseSession = async (client, req, sessionId) => {
+    const result = await client.query(
+      "UPDATE attendance_sessions SET status='closed',ends_at=LEAST(ends_at,now()),closed_at=now() WHERE id=$1 RETURNING id,status,ends_at,room,offering_id",
+      [sessionId]
+    );
+    const absent = await client.query(
+      `INSERT INTO attendance_records(session_id,student_id,status,method,marked_by,reason,proof)
+       SELECT $1, e.student_id, 'absent', 'manual', $2, 'Did not mark before the attendance window closed', 'manual'
+       FROM student_enrollments e
+       WHERE e.offering_id=$3
+         AND NOT EXISTS (SELECT 1 FROM attendance_records r WHERE r.session_id=$1 AND r.student_id=e.student_id)
+       RETURNING id`,
+      [sessionId, req.user.id, result.rows[0].offering_id]
+    );
+    await client.query("UPDATE attendance_sessions SET absent_written_at=now() WHERE id=$1", [sessionId]);
+    return { session: result.rows[0], absentWritten: absent.rowCount };
+  };
+
   app.post("/api/attendance/sessions/:id/close", authenticate, roles("teacher"), asyncRoute(async (req, res) => {
-    await db.transaction(async (client) => {
+    const outcome = await db.transaction(async (client) => {
       const before = await client.query("SELECT id,status,ends_at,room FROM attendance_sessions WHERE id=$1 AND teacher_id=$2 FOR UPDATE", [req.params.id, req.user.id]);
       if (!before.rowCount) throw Object.assign(new Error("Session not found"), { status: 404, code: "SESSION_NOT_FOUND" });
-      const result = await client.query("UPDATE attendance_sessions SET status='closed',ends_at=LEAST(ends_at,now()) WHERE id=$1 RETURNING id,status,ends_at,room", [req.params.id]);
-      await audit(client, req, "ATTENDANCE_SESSION_CLOSED", "attendance_session", req.params.id, before.rows[0], result.rows[0]);
+      if (before.rows[0].status === "closed") return { session: before.rows[0], absentWritten: 0 };
+      const done = await finaliseSession(client, req, req.params.id);
+      await audit(client, req, "ATTENDANCE_SESSION_CLOSED", "attendance_session", req.params.id, before.rows[0], { ...done.session, absentWritten: done.absentWritten });
+      return done;
     });
-    res.json(await sessionDetails(req.params.id, true));
+    res.json({ ...(await sessionDetails(req.params.id, true)), absentWritten: outcome.absentWritten });
+  }));
+
+  /** The teacher's live screen polls this. It also auto-closes an expired session. */
+  app.get("/api/attendance/sessions/:id/live", authenticate, roles("teacher"), asyncRoute(async (req, res) => {
+    const owned = await db.query("SELECT id,status,ends_at,beacon_id FROM attendance_sessions WHERE id=$1 AND teacher_id=$2", [req.params.id, req.user.id]);
+    if (!owned.rowCount) return res.status(404).json({ error: "SESSION_NOT_FOUND" });
+    const row = owned.rows[0];
+    if (row.status === "active" && new Date(row.ends_at).getTime() <= Date.now()) {
+      await db.transaction(async (client) => {
+        await client.query("SELECT id FROM attendance_sessions WHERE id=$1 FOR UPDATE", [req.params.id]);
+        const done = await finaliseSession(client, req, req.params.id);
+        await audit(client, req, "ATTENDANCE_SESSION_EXPIRED", "attendance_session", req.params.id, row, { absentWritten: done.absentWritten });
+      });
+    }
+    const session = await sessionDetails(req.params.id, true);
+    const present = session.roster.filter((student) => student.status === "present").length;
+    let beacon = null;
+    if (row.beacon_id) {
+      const found = await db.query("SELECT beacon_code,label,last_seen_at FROM beacons WHERE id=$1", [row.beacon_id]);
+      const seen = found.rows[0]?.last_seen_at;
+      beacon = found.rows[0] ? { code: found.rows[0].beacon_code, label: found.rows[0].label, online: Boolean(seen && Date.now() - new Date(seen).getTime() < beaconOfflineSeconds * 1000) } : null;
+    }
+    res.json({
+      ...session,
+      present,
+      total: session.roster.length,
+      secondsRemaining: Math.max(0, Math.round((new Date(session.ends_at).getTime() - Date.now()) / 1000)),
+      beacon
+    });
   }));
 
   app.get("/api/student/dashboard", authenticate, roles("student"), asyncRoute(async (req, res) => {
@@ -876,6 +1107,254 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${data.offering.subject_code}-attendance.pdf"`);
     res.send(buffer);
+  }));
+
+  /* =========================================================================
+   * ESP32 classroom beacons
+   *
+   * The beacon never learns anything about students, subjects or rooms beyond
+   * its own label, and it holds no long-lived attendance secret. It polls this
+   * endpoint every few seconds and is told either "advertise nothing" or "these
+   * 8 bytes, for the next N seconds". That is the whole protocol.
+   * ====================================================================== */
+  const beaconAuth = asyncRoute(async (req, res, next) => {
+    const code = String(req.get("X-Beacon-Code") || req.body.beaconCode || "").trim();
+    const key = String(req.get("X-Beacon-Key") || req.body.deviceKey || "").trim();
+    if (!code || !key) return res.status(401).json({ error: "BEACON_CREDENTIALS_REQUIRED" });
+    const found = await db.query("SELECT * FROM beacons WHERE beacon_code=$1", [code]);
+    const beacon = found.rows[0];
+    const expected = beacon?.device_key_hash || sha256(randomToken(8));
+    const supplied = sha256(key);
+    const match = supplied.length === expected.length && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+    if (!beacon || !match) return res.status(401).json({ error: "BEACON_NOT_RECOGNISED" });
+    if (!beacon.enabled) return res.status(403).json({ error: "BEACON_DISABLED", message: "This beacon has been disabled by an administrator." });
+    req.beacon = beacon;
+    next();
+  });
+
+  app.post("/api/beacon/poll", beaconAuth, asyncRoute(async (req, res) => {
+    const beacon = req.beacon;
+    await db.query(
+      "UPDATE beacons SET last_seen_at=now(), status='online', firmware_version=COALESCE($2,firmware_version), last_ip_hash=$3 WHERE id=$1",
+      [beacon.id, req.body.firmwareVersion || null, ipDigest(authSecret, req.ip)]
+    );
+    if (!beacon.classroom_id) {
+      return res.json({ advertise: false, reason: "UNASSIGNED", pollAfterSeconds: 10, serverTime: Date.now() });
+    }
+    const session = await db.query(
+      `SELECT a.id, a.ends_at, su.name AS subject
+       FROM attendance_sessions a JOIN course_offerings o ON o.id=a.offering_id JOIN subjects su ON su.id=o.subject_id
+       WHERE a.classroom_id=$1 AND a.status='active' AND a.ends_at>now() ORDER BY a.starts_at DESC LIMIT 1`,
+      [beacon.classroom_id]
+    );
+    if (!session.rowCount) {
+      return res.json({ advertise: false, reason: "NO_ACTIVE_SESSION", pollAfterSeconds: 5, serverTime: Date.now() });
+    }
+    const row = session.rows[0];
+    const secondsRemaining = Math.max(0, Math.round((new Date(row.ends_at).getTime() - Date.now()) / 1000));
+    res.json({
+      advertise: true,
+      sessionId: row.id,
+      code: rotatingCode(authSecret, row.id),
+      rotationSeconds: ROTATION_SECONDS,
+      validForSeconds: Math.min(secondsUntilRotation(), secondsRemaining),
+      secondsRemaining,
+      pollAfterSeconds: 2,
+      serverTime: Date.now()
+    });
+  }));
+
+  app.post("/api/beacon/event", beaconAuth, asyncRoute(async (req, res) => {
+    const event = ["poll", "advertise_start", "advertise_stop", "error", "boot"].includes(req.body.event) ? req.body.event : "poll";
+    await db.query(
+      "INSERT INTO beacon_events(beacon_id,event,detail) VALUES($1,$2,$3)",
+      [req.beacon.id, event, String(req.body.detail || "").slice(0, 500) || null]
+    );
+    await db.query("UPDATE beacons SET last_seen_at=now(), status='online' WHERE id=$1", [req.beacon.id]);
+    res.status(204).end();
+  }));
+
+  /* ---- Admin: classroom registry ---------------------------------------- */
+  app.get("/api/admin/classrooms", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const result = await db.query(
+      `SELECT c.*, b.id AS beacon_id, b.beacon_code, b.label AS beacon_label, b.status AS beacon_status, b.last_seen_at, b.firmware_version,
+       (b.last_seen_at IS NOT NULL AND b.last_seen_at > now()-($2||' seconds')::interval) AS beacon_online
+       FROM classrooms c LEFT JOIN beacons b ON b.classroom_id=c.id AND b.enabled=true
+       WHERE c.organization_id=$1 ORDER BY c.building NULLS FIRST, c.room_number`,
+      [req.user.organization_id, String(beaconOfflineSeconds)]
+    );
+    res.json(result.rows);
+  }));
+
+  app.post("/api/admin/classrooms", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const roomNumber = cleanRoom(req.body.roomNumber);
+    if (!roomNumber) return res.status(400).json({ error: "MISSING_FIELDS", fields: ["roomNumber"] });
+    const minRssi = Number.isFinite(Number(req.body.minRssi)) ? Math.max(-127, Math.min(-10, Number(req.body.minRssi))) : minimumRssi;
+    const result = await db.query(
+      `INSERT INTO classrooms(organization_id,room_number,building,floor,capacity,min_rssi)
+       VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [req.user.organization_id, roomNumber, req.body.building || null, req.body.floor || null, req.body.capacity ? Number(req.body.capacity) : null, minRssi]
+    );
+    await db.transaction((client) => audit(client, req, "CLASSROOM_CREATED", "classroom", result.rows[0].id, null, result.rows[0]));
+    res.status(201).json(result.rows[0]);
+  }));
+
+  app.patch("/api/admin/classrooms/:id", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const result = await db.query(
+      `UPDATE classrooms SET
+         room_number=COALESCE($3,room_number), building=COALESCE($4,building), floor=COALESCE($5,floor),
+         capacity=COALESCE($6,capacity), min_rssi=COALESCE($7,min_rssi), active=COALESCE($8,active)
+       WHERE id=$1 AND organization_id=$2 RETURNING *`,
+      [req.params.id, req.user.organization_id,
+       req.body.roomNumber ? cleanRoom(req.body.roomNumber) : null, req.body.building ?? null, req.body.floor ?? null,
+       req.body.capacity ? Number(req.body.capacity) : null,
+       req.body.minRssi !== undefined ? Math.max(-127, Math.min(-10, Number(req.body.minRssi))) : null,
+       req.body.active !== undefined ? Boolean(req.body.active) : null]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "NOT_FOUND" });
+    res.json(result.rows[0]);
+  }));
+
+  /* ---- Admin: beacon provisioning --------------------------------------- */
+  app.get("/api/admin/beacons", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const result = await db.query(
+      `SELECT b.id,b.beacon_code,b.label,b.hardware,b.firmware_version,b.status,b.last_seen_at,b.enabled,
+              c.id AS classroom_id,c.room_number,c.building,
+              (b.last_seen_at IS NOT NULL AND b.last_seen_at > now()-($2||' seconds')::interval) AS online,
+              (SELECT count(*) FROM attendance_sessions a WHERE a.beacon_id=b.id)::int AS sessions_served
+       FROM beacons b LEFT JOIN classrooms c ON c.id=b.classroom_id
+       WHERE b.organization_id=$1 ORDER BY c.room_number NULLS LAST, b.beacon_code`,
+      [req.user.organization_id, String(beaconOfflineSeconds)]
+    );
+    res.json(result.rows);
+  }));
+
+  app.post("/api/admin/beacons", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const beaconCode = String(req.body.beaconCode || "").trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
+    if (!beaconCode) return res.status(400).json({ error: "MISSING_FIELDS", fields: ["beaconCode"] });
+    if (req.body.classroomId) {
+      const classroom = await db.query("SELECT 1 FROM classrooms WHERE id=$1 AND organization_id=$2", [req.body.classroomId, req.user.organization_id]);
+      if (!classroom.rowCount) return res.status(400).json({ error: "INVALID_CLASSROOM" });
+    }
+    // Shown once. The server only ever stores its hash.
+    const deviceKey = randomToken(24);
+    const result = await db.query(
+      `INSERT INTO beacons(organization_id,classroom_id,beacon_code,label,device_key_hash,hardware)
+       VALUES($1,$2,$3,$4,$5,$6) RETURNING id,beacon_code,label,classroom_id,status,enabled`,
+      [req.user.organization_id, req.body.classroomId || null, beaconCode, req.body.label || `AttenDesk ${beaconCode}`, sha256(deviceKey), req.body.hardware || "esp32"]
+    );
+    await db.transaction((client) => audit(client, req, "BEACON_PROVISIONED", "beacon", result.rows[0].id, null, { beaconCode }));
+    res.status(201).json({
+      ...result.rows[0],
+      deviceKey,
+      notice: "Copy this device key into the ESP32 firmware now. It cannot be shown again."
+    });
+  }));
+
+  app.post("/api/admin/beacons/:id/rotate-key", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const deviceKey = randomToken(24);
+    const result = await db.query(
+      "UPDATE beacons SET device_key_hash=$3, status='provisioned' WHERE id=$1 AND organization_id=$2 RETURNING id,beacon_code",
+      [req.params.id, req.user.organization_id, sha256(deviceKey)]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "NOT_FOUND" });
+    await db.transaction((client) => audit(client, req, "BEACON_KEY_ROTATED", "beacon", req.params.id, null, null));
+    res.json({ ...result.rows[0], deviceKey, notice: "Reflash the ESP32 with this key. The old key no longer works." });
+  }));
+
+  app.patch("/api/admin/beacons/:id", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    if (req.body.classroomId) {
+      const classroom = await db.query("SELECT 1 FROM classrooms WHERE id=$1 AND organization_id=$2", [req.body.classroomId, req.user.organization_id]);
+      if (!classroom.rowCount) return res.status(400).json({ error: "INVALID_CLASSROOM" });
+    }
+    const result = await db.query(
+      `UPDATE beacons SET classroom_id=COALESCE($3,classroom_id), label=COALESCE($4,label), enabled=COALESCE($5,enabled)
+       WHERE id=$1 AND organization_id=$2 RETURNING id,beacon_code,label,classroom_id,enabled`,
+      [req.params.id, req.user.organization_id, req.body.classroomId || null, req.body.label || null,
+       req.body.enabled !== undefined ? Boolean(req.body.enabled) : null]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "NOT_FOUND" });
+    res.json(result.rows[0]);
+  }));
+
+  app.get("/api/admin/beacons/:id/events", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const owned = await db.query("SELECT 1 FROM beacons WHERE id=$1 AND organization_id=$2", [req.params.id, req.user.organization_id]);
+    if (!owned.rowCount) return res.status(404).json({ error: "NOT_FOUND" });
+    const result = await db.query("SELECT event,detail,created_at FROM beacon_events WHERE beacon_id=$1 ORDER BY created_at DESC LIMIT 100", [req.params.id]);
+    res.json(result.rows);
+  }));
+
+  /* ---- Reports: below threshold ----------------------------------------- */
+  app.get("/api/reports/below-threshold", authenticate, roles("teacher", "admin"), asyncRoute(async (req, res) => {
+    const threshold = Number.isFinite(Number(req.query.threshold)) ? Number(req.query.threshold) : null;
+    const result = await db.query(
+      `WITH totals AS (
+         SELECT e.student_id, o.id AS offering_id, su.name AS subject, su.code AS subject_code,
+                count(DISTINCT a.id) FILTER (WHERE a.status='closed' OR a.ends_at<=now())::int AS conducted,
+                count(DISTINCT ar.session_id) FILTER (WHERE ar.status='present')::int AS attended
+         FROM student_enrollments e
+         JOIN course_offerings o ON o.id=e.offering_id
+         JOIN subjects su ON su.id=o.subject_id
+         LEFT JOIN attendance_sessions a ON a.offering_id=o.id AND a.status<>'cancelled'
+         LEFT JOIN attendance_records ar ON ar.session_id=a.id AND ar.student_id=e.student_id
+         WHERE o.organization_id=$1 AND ($3::uuid IS NULL OR o.teacher_id=$3) AND ($4::uuid IS NULL OR o.id=$4)
+         GROUP BY e.student_id,o.id,su.name,su.code
+       )
+       SELECT u.full_name,s.roll_number,b.name AS branch,sc.name AS section,se.number AS semester,
+              t.subject,t.subject_code,t.attended,t.conducted,
+              CASE WHEN t.conducted=0 THEN 0 ELSE round(t.attended*100.0/t.conducted,1) END AS percentage
+       FROM totals t
+       JOIN students s ON s.user_id=t.student_id JOIN users u ON u.id=s.user_id
+       JOIN branches b ON b.id=s.branch_id JOIN sections sc ON sc.id=s.section_id JOIN semesters se ON se.id=s.semester_id
+       WHERE t.conducted>0 AND (t.attended*100.0/t.conducted) < COALESCE($2::numeric,(SELECT attendance_threshold FROM organizations WHERE id=$1))
+       ORDER BY percentage, u.full_name`,
+      [req.user.organization_id, threshold, req.user.role === "teacher" ? req.user.id : null, req.query.offeringId || null]
+    );
+    res.json({ threshold, rows: result.rows });
+  }));
+
+  /* ---- Admin: bulk import ------------------------------------------------ */
+  app.post("/api/admin/import/students", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const rows = Array.isArray(req.body.rows) ? req.body.rows.slice(0, 1000) : [];
+    if (!rows.length) return res.status(400).json({ error: "NO_ROWS", message: "Provide a rows array parsed from your CSV" });
+    const outcome = { created: 0, skipped: 0, errors: [] };
+    for (const [index, row] of rows.entries()) {
+      try {
+        const email = cleanEmail(row.college_email || row.email);
+        const rollNumber = cleanRoll(row.roll_number || row.rollNumber);
+        const fullName = String(row.full_name || row.fullName || "").trim();
+        if (!email || !rollNumber || !fullName) throw new Error("full_name, college_email and roll_number are required");
+        const section = await db.query(
+          `SELECT sc.id AS section_id, b.id AS branch_id, se.id AS semester_id
+           FROM sections sc JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=sc.semester_id
+           WHERE b.organization_id=$1 AND lower(b.code)=lower($2) AND se.number=$3 AND lower(sc.name)=lower($4) AND se.active=true`,
+          [req.user.organization_id, row.branch_code, Number(row.semester), row.section_name]
+        );
+        if (!section.rowCount) throw new Error(`No section matches ${row.branch_code}/sem ${row.semester}/${row.section_name}`);
+        await db.transaction(async (client) => {
+          const user = await client.query(
+            `INSERT INTO users(organization_id,email,full_name,role,status) VALUES($1,$2,$3,'student','active')
+             ON CONFLICT (organization_id,email) DO NOTHING RETURNING id`,
+            [req.user.organization_id, email, fullName]
+          );
+          if (!user.rowCount) { outcome.skipped += 1; return; }
+          await client.query(
+            "INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,phone) VALUES($1,$2,$3,$4,$5,$6)",
+            [user.rows[0].id, rollNumber, section.rows[0].branch_id, section.rows[0].semester_id, section.rows[0].section_id, row.phone || null]
+          );
+          if (row.barcode) {
+            await client.query(
+              "INSERT INTO barcode_registrations(student_id,barcode_hash,barcode_last_four,registered_by) VALUES($1,$2,$3,$4)",
+              [user.rows[0].id, keyedHash(barcodePepper, `${req.user.organization_id}:${String(row.barcode).trim()}`), String(row.barcode).trim().slice(-4), req.user.id]
+            );
+          }
+          outcome.created += 1;
+        });
+      } catch (error) {
+        outcome.errors.push({ row: index + 1, message: error.message });
+      }
+    }
+    res.json(outcome);
   }));
 
   app.get("/api/admin/audit", authenticate, roles("admin"), asyncRoute(async (req, res) => {

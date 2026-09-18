@@ -152,7 +152,9 @@ class BleSessionManager(private val context: Context) {
                 val bytes = result.scanRecord?.getServiceData(SERVICE_UUID) ?: return
                 if (bytes.size != 8) return
                 val token = bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
-                val samples = observations.getOrPut(token) { mutableListOf() }
+                // Keyed by device, not by code: the ESP32 rotates its code every
+                // 30 seconds and the signal history must survive that.
+                val samples = observations.getOrPut(result.device.address) { mutableListOf() }
                 samples += result.rssi
                 if (samples.size > 7) samples.removeAt(0)
                 onSignal(NearbySignal(token, samples.toList()))

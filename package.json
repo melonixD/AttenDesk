@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node server/src/production-server.js",
     "migrate": "node server/scripts/migrate.js",
+    "seed:hbtu": "node server/scripts/seed-hbtu.js",
     "test": "node --test server/test/*.test.js"
   },
   "dependencies": {

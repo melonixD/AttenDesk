@@ -11,8 +11,12 @@ const state = {
   navigationSequence: 0,
   navigationBusy: false,
   pendingPage: null,
-  webBleNearby: null
+  webBleNearby: null,
+  loginMode: 'student',
+  liveSession: null,
+  rosterFilter: ''
 };
+let livePollTimer = null;
 
 const ATTENDESK_BLE_SERVICE = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
 const ATTENDESK_TOKEN_CHARACTERISTIC = 'd953c2d0-34d8-4d7b-94a7-2f54b42ea6d1';
@@ -319,6 +323,84 @@ function showWebDeviceChangeRequest(verificationToken) {
   }, { once: true });
 }
 
+function setLoginMode(mode) {
+  state.loginMode = mode;
+  $$('[data-login-mode]').forEach(tab => tab.classList.toggle('active', tab.dataset.loginMode === mode));
+  $('#student-login-form').classList.toggle('hidden', mode !== 'student');
+  $('#staff-login-form').classList.toggle('hidden', mode === 'student');
+  $('#request-otp-form').classList.add('hidden');
+  $('#verify-otp-form').classList.add('hidden');
+  $('#auth-message').classList.add('hidden');
+  if (mode !== 'student') $('#staff-identifier').placeholder = mode === 'admin' ? 'melonix' : 'alakh';
+}
+
+function storeSession(result) {
+  state.token = result.accessToken;
+  state.refresh = result.refreshToken;
+  state.user = result.user;
+  state.page = 'overview';
+  sessionStorage.setItem('attendesk_access', state.token);
+  sessionStorage.setItem('attendesk_refresh', state.refresh);
+  sessionStorage.setItem('attendesk_user', JSON.stringify(state.user));
+  showApp();
+}
+
+$$('[data-login-mode]').forEach(tab => tab.addEventListener('click', () => setLoginMode(tab.dataset.loginMode)));
+
+$('#student-login-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = event.submitter;
+  setButtonBusy(button, true, 'Signing in…');
+  try {
+    const result = await api('/api/auth/student-login', {
+      method: 'POST',
+      body: {
+        fullName: $('#student-name').value,
+        rollNumber: $('#student-roll').value,
+        clientType: 'web_ble',
+        installationId: installationId(),
+        deviceName: browserDeviceName(),
+        platform: 'web'
+      }
+    });
+    storeSession(result);
+  } catch (error) {
+    if (error.code === 'DEVICE_CHANGE_REQUIRED' && error.deviceChangeToken) {
+      message('#auth-message', 'This account is linked to another phone or browser.', true);
+      showWebDeviceChangeRequest(error.deviceChangeToken);
+    } else {
+      message('#auth-message', error.message, true);
+    }
+  } finally {
+    setButtonBusy(button, false);
+  }
+});
+
+$('#staff-login-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = event.submitter;
+  setButtonBusy(button, true, 'Signing in…');
+  try {
+    storeSession(await api('/api/auth/login', {
+      method: 'POST',
+      body: { identifier: $('#staff-identifier').value, password: $('#staff-password').value, clientType: 'web' }
+    }));
+  } catch (error) {
+    message('#auth-message', error.message, true);
+  } finally {
+    setButtonBusy(button, false);
+  }
+});
+
+$('[data-action="use-otp"]').addEventListener('click', () => {
+  $('#staff-login-form').classList.add('hidden');
+  $('#request-otp-form').classList.remove('hidden');
+});
+$('[data-action="use-password"]').addEventListener('click', () => {
+  $('#request-otp-form').classList.add('hidden');
+  $('#staff-login-form').classList.remove('hidden');
+});
+
 $('#request-otp-form').addEventListener('submit', async event => {
   event.preventDefault();
   const button = event.submitter;
@@ -344,15 +426,9 @@ $('#verify-otp-form').addEventListener('submit', async event => {
   try {
     const result = await api('/api/auth/verify-otp', {
       method: 'POST',
-      body: { email: state.loginEmail, code: $('#login-otp').value, clientType: 'web_ble', installationId: installationId(), deviceName: browserDeviceName(), platform: 'web' }
+      body: { email: state.loginEmail, code: $('#login-otp').value, clientType: state.loginMode === 'student' ? 'web_ble' : 'web', installationId: installationId(), deviceName: browserDeviceName(), platform: 'web' }
     });
-    state.token = result.accessToken;
-    state.refresh = result.refreshToken;
-    state.user = result.user;
-    sessionStorage.setItem('attendesk_access', state.token);
-    sessionStorage.setItem('attendesk_refresh', state.refresh);
-    sessionStorage.setItem('attendesk_user', JSON.stringify(state.user));
-    showApp();
+    storeSession(result);
   } catch (error) {
     if (error.code === 'DEVICE_CHANGE_REQUIRED' && error.deviceChangeToken) {
       message('#auth-message', 'This student account is linked to another registered device.', true);
@@ -448,9 +524,9 @@ $('#registration-otp-form').addEventListener('submit', async event => {
 
 const navByRole = {
   admin: [
-    ['overview', 'home', 'Overview'], ['registrations', 'check', 'Approvals'], ['people', 'users', 'People'], ['academic', 'building', 'Academic setup'], ['courses', 'book', 'Courses'], ['timetable', 'calendar', 'Timetable'], ['devices', 'phone', 'Device requests'], ['reports', 'chart', 'Reports'], ['security', 'shield', 'Security & backups']
+    ['overview', 'home', 'Overview'], ['registrations', 'check', 'Approvals'], ['people', 'users', 'People'], ['academic', 'building', 'Academic setup'], ['courses', 'book', 'Courses'], ['timetable', 'calendar', 'Timetable'], ['classrooms', 'building', 'Rooms & beacons'], ['devices', 'phone', 'Device requests'], ['reports', 'chart', 'Reports'], ['security', 'shield', 'Security & backups']
   ],
-  teacher: [['overview', 'home', 'Overview'], ['classes', 'book', 'My classes'], ['reports', 'chart', 'Attendance reports']],
+  teacher: [['overview', 'home', 'Overview'], ['classes', 'book', 'Take attendance'], ['reports', 'chart', 'Attendance reports']],
   student: [['overview', 'chart', 'My attendance']]
 };
 
@@ -474,6 +550,7 @@ async function navigate(page) {
   state.navigationBusy = true;
   const navigationId = ++state.navigationSequence;
   state.page = page;
+  if (page !== 'live') stopLivePolling();
   $$('.nav-button').forEach(button => button.classList.toggle('active', button.dataset.page === page));
   closeMobileNavigation();
   const content = $('#page-content');
@@ -516,6 +593,7 @@ async function renderAdminPage(page) {
   if (page === 'academic') return renderAcademic();
   if (page === 'courses') return renderCourses();
   if (page === 'timetable') return renderTimetable();
+  if (page === 'classrooms') return renderClassrooms();
   if (page === 'devices') return renderDevices();
   if (page === 'reports') return renderReports();
   if (page === 'security') return renderSecurity();
@@ -610,10 +688,292 @@ async function renderSecurity() {
 
 async function renderTeacherPage(page) {
   if (page === 'reports') return renderReports();
+  if (page === 'live' && state.liveSession) return renderLiveSession();
   const classes = await api('/api/teacher/classes');
   const threshold = classes[0]?.attendance_threshold ?? '—';
-  heading('Teacher workspace', page === 'classes' ? 'Your assigned classes' : `${greeting()}, ${state.user.full_name.split(' ')[0]}.`);
-  $('#page-content').innerHTML = `<section class="metrics">${metric(classes.length,'Assigned classes','Current semester',true)}${metric(`${threshold}%`,'Required attendance','College threshold')}${metric('BLE','Attendance method','Barcode verified')}${metric('Live','Roster updates','Every two seconds')}</section><article class="panel"><div class="panel-header"><div><span class="eyebrow">Current semester</span><h2>Classes and reports</h2></div></div>${classes.map(row=>`<div class="schedule-row teacher-class-row"><span class="day">${escapeHtml(row.code)}</span><strong>${escapeHtml(row.subject)}</strong><span>${escapeHtml(row.branch)} · ${escapeHtml(row.section)}</span><span>Room ${escapeHtml(row.default_room)}</span><button class="table-action" data-view-report="${row.id}">Report</button></div>`).join('') || '<div class="empty">No classes are assigned yet.</div>'}</article><article class="panel app-callout"><span>${icon('phone',20)}</span><div><strong>Teacher Beacon companion required</strong><p>Start the timed class from the Android teacher app. It hosts the secure BLE service that Chrome students connect to; reports and corrections remain available here.</p></div><i>${icon('arrow',18)}</i></article>`;
+  heading('Teacher workspace', page === 'classes' ? 'Take attendance' : `${greeting()}, ${state.user.full_name.split(' ')[0]}.`);
+  $('#page-content').innerHTML = `
+    <section class="metrics">
+      ${metric(classes.length, 'Assigned classes', 'Current semester', true)}
+      ${metric(`${threshold}%`, 'Required attendance', 'College threshold')}
+      ${metric('ESP32', 'Attendance method', 'Rotating classroom beacon')}
+      ${metric('Live', 'Roster updates', 'Every two seconds')}
+    </section>
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">Current semester</span><h2>Your classes</h2></div></div>
+      ${classes.map(row => `
+        <div class="schedule-row teacher-class-row">
+          <span class="day">${escapeHtml(row.code)}</span>
+          <strong>${escapeHtml(row.subject)}</strong>
+          <span>${escapeHtml(row.branch)} · Section ${escapeHtml(row.section)} · Sem ${escapeHtml(String(row.semester))}</span>
+          <span>Room ${escapeHtml(row.default_room)}</span>
+          <button class="primary compact" data-start-session="${row.id}" data-room="${escapeHtml(row.default_room)}" data-subject="${escapeHtml(row.subject)}">Take attendance</button>
+          <button class="table-action" data-view-report="${row.id}">Report</button>
+        </div>`).join('') || '<div class="empty">No classes are assigned to you yet.</div>'}
+    </article>`;
+}
+
+function openStartSessionDialog(offeringId, subject, defaultRoom) {
+  openModal(`
+    <span class="eyebrow">New attendance window</span>
+    <h2>${escapeHtml(subject)}</h2>
+    <form id="start-session-form">
+      <label>Classroom<input name="room" value="${escapeHtml(defaultRoom || '')}" required autocomplete="off" /></label>
+      <span class="field-label">Duration</span>
+      <div class="duration-grid">
+        ${[1, 2, 3, 5].map((minutes, index) => `
+          <label class="duration-option${index === 2 ? ' selected' : ''}">
+            <input type="radio" name="minutes" value="${minutes}" ${index === 2 ? 'checked' : ''} />
+            <strong>${minutes}</strong><small>min</small>
+          </label>`).join('')}
+        <label class="duration-option">
+          <input type="radio" name="minutes" value="custom" />
+          <strong>Custom</strong><small>30–600 s</small>
+        </label>
+      </div>
+      <label id="custom-duration-field" class="hidden">Seconds<input name="customSeconds" type="number" min="30" max="600" value="180" /></label>
+      <button class="primary" type="submit">Open attendance window</button>
+      <p class="field-note">The ESP32 in this room starts broadcasting a code that changes every 30 seconds. Students must be inside to capture it.</p>
+    </form>`);
+
+  $$('#start-session-form input[name="minutes"]').forEach(input => input.addEventListener('change', () => {
+    $$('.duration-option').forEach(option => option.classList.toggle('selected', option.contains(input) && input.checked));
+    $('#custom-duration-field').classList.toggle('hidden', input.value !== 'custom' || !input.checked);
+  }));
+
+  $('#start-session-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = event.submitter;
+    setButtonBusy(button, true, 'Opening…');
+    try {
+      const data = new FormData(event.target);
+      const choice = data.get('minutes');
+      const durationSeconds = choice === 'custom'
+        ? Math.max(30, Math.min(600, Number(data.get('customSeconds')) || 180))
+        : Number(choice) * 60;
+      const session = await api('/api/attendance/sessions', {
+        method: 'POST',
+        body: { offeringId, room: data.get('room'), durationSeconds }
+      });
+      closeModal();
+      state.liveSession = session;
+      if (session.beaconWarning) toast(session.beaconWarning);
+      await navigate('live');
+    } catch (error) {
+      if (error.code === 'SESSION_ALREADY_ACTIVE' || error.code === 'ROOM_ALREADY_ACTIVE') {
+        toast(error.message);
+        if (error.sessionId) { closeModal(); state.liveSession = { id: error.sessionId }; await navigate('live'); return; }
+      }
+      toast(error.message || 'The attendance window could not be opened.');
+    } finally {
+      setButtonBusy(button, false);
+    }
+  }, { once: true });
+}
+
+/* ---------------------------------------------------------------------------
+ * Live attendance screen. Polls the authoritative roster every two seconds;
+ * the countdown is rendered from the server's secondsRemaining, never from a
+ * local clock, so a paused tab or a slow phone cannot extend the window.
+ * ------------------------------------------------------------------------ */
+function stopLivePolling() {
+  if (livePollTimer) { clearInterval(livePollTimer); livePollTimer = null; }
+}
+
+async function renderLiveSession() {
+  const sessionId = state.liveSession?.id;
+  if (!sessionId) return navigate('classes');
+  heading('Live attendance', 'Attendance in progress');
+  const live = await api(`/api/attendance/sessions/${sessionId}/live`);
+  state.liveSession = live;
+  $('#page-content').innerHTML = liveSessionMarkup(live);
+  stopLivePolling();
+  livePollTimer = setInterval(async () => {
+    if (state.page !== 'live') return stopLivePolling();
+    try {
+      const next = await api(`/api/attendance/sessions/${sessionId}/live`);
+      state.liveSession = next;
+      paintLiveSession(next);
+      if (next.status !== 'active') stopLivePolling();
+    } catch { /* a dropped poll is not fatal; the next tick retries */ }
+  }, 2000);
+}
+
+const formatClock = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+
+function liveSessionMarkup(live) {
+  const active = live.status === 'active' && live.secondsRemaining > 0;
+  return `
+    <section class="live-header ${active ? 'live-active' : 'live-ended'}">
+      <div>
+        <span class="eyebrow light"><i class="eyebrow-dot"></i>${active ? 'Attendance open' : 'Window closed'}</span>
+        <h2>${escapeHtml(live.subject)}</h2>
+        <p>${escapeHtml(live.branch)} · Section ${escapeHtml(live.section)} · Room ${escapeHtml(live.room)}</p>
+      </div>
+      <div class="live-timer"><strong id="live-clock">${formatClock(live.secondsRemaining)}</strong><small>remaining</small></div>
+      <div class="live-count"><strong><span id="live-present">${live.present}</span> / ${live.total}</strong><small>present</small></div>
+    </section>
+
+    <section class="live-progress"><i id="live-bar" style="width:${live.total ? (live.present / live.total) * 100 : 0}%"></i></section>
+
+    <article class="panel">
+      <div class="panel-header">
+        <div><span class="eyebrow">Classroom beacon</span><h2 id="beacon-state">${live.beacon ? (live.beacon.online ? `${escapeHtml(live.beacon.label)} is broadcasting` : `${escapeHtml(live.beacon.label)} is not responding`) : 'No ESP32 registered for this room'}</h2></div>
+        <span class="pill ${live.beacon?.online ? '' : 'warn'}" id="beacon-pill">${live.beacon ? (live.beacon.online ? 'Online' : 'Offline') : 'None'}</span>
+      </div>
+      ${live.beacon ? '' : '<p class="ble-explainer">Students cannot detect this room until an administrator assigns an ESP32 beacon to it in Rooms &amp; beacons.</p>'}
+    </article>
+
+    <article class="panel">
+      <div class="panel-header">
+        <div><span class="eyebrow">Roster</span><h2>Students</h2></div>
+        <div class="live-controls">
+          <input id="roster-search" class="inline-search" placeholder="Search name or roll" value="${escapeHtml(state.rosterFilter)}" />
+          ${active ? '<button class="table-action danger" data-close-session>Close now</button>' : '<button class="table-action" data-page="classes">Back to classes</button>'}
+        </div>
+      </div>
+      <div id="roster-list" class="roster-list">${rosterMarkup(live.roster)}</div>
+    </article>`;
+}
+
+function rosterMarkup(roster) {
+  const filter = state.rosterFilter.trim().toLowerCase();
+  const rows = roster.filter(student =>
+    !filter || student.full_name.toLowerCase().includes(filter) || String(student.roll_number).toLowerCase().includes(filter));
+  if (!rows.length) return '<div class="empty">No student matches that search.</div>';
+  return rows.map(student => `
+    <div class="roster-row ${student.status === 'present' ? 'is-present' : ''}">
+      <span class="roster-mark">${student.status === 'present' ? icon('check', 15) : ''}</span>
+      <div class="roster-identity"><strong>${escapeHtml(student.full_name)}</strong><small>${escapeHtml(student.roll_number)}</small></div>
+      <span class="roster-method">${student.status === 'present' ? methodLabel(student.method) : 'Not marked'}</span>
+      <button class="table-action" data-manual-mark="${student.id}" data-student-name="${escapeHtml(student.full_name)}" data-current="${student.status}">
+        ${student.status === 'present' ? 'Mark absent' : 'Mark present'}
+      </button>
+    </div>`).join('');
+}
+
+const methodLabel = (method) => ({
+  barcode_ble: 'Bluetooth + ID card',
+  barcode_web_ble: 'Web Bluetooth + ID card',
+  manual: 'Manual',
+  admin_correction: 'Admin correction'
+}[method] || 'Present');
+
+/** Repaint only what changed, so the search box keeps focus while polling. */
+function paintLiveSession(live) {
+  const clock = $('#live-clock');
+  if (clock) clock.textContent = formatClock(live.secondsRemaining);
+  const present = $('#live-present');
+  if (present && present.textContent !== String(live.present)) {
+    present.textContent = live.present;
+    present.classList.remove('count-bump');
+    void present.offsetWidth;
+    present.classList.add('count-bump');
+  }
+  const bar = $('#live-bar');
+  if (bar) bar.style.width = `${live.total ? (live.present / live.total) * 100 : 0}%`;
+  const pill = $('#beacon-pill');
+  if (pill && live.beacon) {
+    pill.textContent = live.beacon.online ? 'Online' : 'Offline';
+    pill.classList.toggle('warn', !live.beacon.online);
+  }
+  const list = $('#roster-list');
+  if (list && document.activeElement?.id !== 'roster-list') list.innerHTML = rosterMarkup(live.roster);
+  if (live.status !== 'active' || live.secondsRemaining <= 0) {
+    const header = $('.live-header');
+    if (header && !header.classList.contains('live-ended')) {
+      header.classList.replace('live-active', 'live-ended');
+      $('.live-header .eyebrow').innerHTML = 'Window closed';
+      toast('Attendance window closed. Everyone unmarked is now recorded absent.');
+    }
+  }
+}
+
+function openManualMarkDialog(studentId, studentName, currentStatus) {
+  const nextStatus = currentStatus === 'present' ? 'absent' : 'present';
+  openModal(`
+    <span class="eyebrow">Manual correction</span>
+    <h2>${escapeHtml(studentName)}</h2>
+    <p class="modal-copy">Marking this student <strong>${nextStatus}</strong>. Every manual change is recorded against your account with the reason you give.</p>
+    <form id="manual-mark-form">
+      <label>Reason<input name="reason" required minlength="4" placeholder="Phone battery dead, damaged ID card, …" autofocus /></label>
+      <button class="primary" type="submit">Record ${nextStatus}</button>
+    </form>`);
+  $('#manual-mark-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = event.submitter;
+    setButtonBusy(button, true, 'Saving…');
+    try {
+      await api(`/api/attendance/sessions/${state.liveSession.id}/manual`, {
+        method: 'POST',
+        body: { studentId, status: nextStatus, reason: new FormData(event.target).get('reason') }
+      });
+      closeModal();
+      toast(`${studentName} marked ${nextStatus}`);
+      const live = await api(`/api/attendance/sessions/${state.liveSession.id}/live`);
+      state.liveSession = live;
+      paintLiveSession(live);
+      const list = $('#roster-list');
+      if (list) list.innerHTML = rosterMarkup(live.roster);
+    } catch (error) {
+      toast(error.message || 'The correction could not be saved.');
+    } finally {
+      setButtonBusy(button, false);
+    }
+  }, { once: true });
+}
+
+/* ------------------------------- Rooms & beacons (admin) ----------------- */
+async function renderClassrooms() {
+  heading('Hardware', 'Rooms & beacons');
+  const [classrooms, beacons] = await Promise.all([api('/api/admin/classrooms'), api('/api/admin/beacons')]);
+  const online = beacons.filter(row => row.online).length;
+  $('#page-content').innerHTML = `
+    <section class="metrics">
+      ${metric(classrooms.length, 'Classrooms', 'Registered rooms', true)}
+      ${metric(beacons.length, 'Beacons', 'Provisioned ESP32 devices')}
+      ${metric(online, 'Online now', 'Reported in the last minute')}
+      ${metric(beacons.filter(row => !row.classroom_id).length, 'Unassigned', 'Needs a room')}
+    </section>
+
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">Registry</span><h2>Classrooms</h2></div><button class="primary compact" data-add-classroom>Add classroom</button></div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Room</th><th>Building</th><th>Beacon</th><th>Signal floor</th><th>Status</th></tr></thead>
+        <tbody>${classrooms.map(row => `
+          <tr>
+            <td><strong>${escapeHtml(row.room_number)}</strong></td>
+            <td>${escapeHtml(row.building || '—')}</td>
+            <td>${row.beacon_code ? escapeHtml(row.beacon_code) : '<span class="warning-text">None assigned</span>'}</td>
+            <td>${row.min_rssi} dBm</td>
+            <td><span class="pill ${row.beacon_online ? '' : 'warn'}">${row.beacon_code ? (row.beacon_online ? 'Online' : 'Offline') : 'No beacon'}</span></td>
+          </tr>`).join('') || emptyTableRow('No classroom has been registered yet.', 5)}</tbody>
+      </table></div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header"><div><span class="eyebrow">Hardware</span><h2>ESP32 beacons</h2></div><button class="primary compact" data-add-beacon>Provision beacon</button></div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Beacon</th><th>Room</th><th>Firmware</th><th>Last seen</th><th>Sessions</th><th>Action</th></tr></thead>
+        <tbody>${beacons.map(row => `
+          <tr>
+            <td><strong>${escapeHtml(row.beacon_code)}</strong><br /><small>${escapeHtml(row.label)}</small></td>
+            <td>${row.room_number ? escapeHtml(row.room_number) : '<span class="warning-text">Unassigned</span>'}</td>
+            <td>${escapeHtml(row.firmware_version || '—')}</td>
+            <td><span class="pill ${row.online ? '' : 'warn'}">${row.last_seen_at ? new Date(row.last_seen_at).toLocaleTimeString() : 'Never'}</span></td>
+            <td>${row.sessions_served}</td>
+            <td><button class="table-action" data-rotate-beacon="${row.id}" data-beacon-code="${escapeHtml(row.beacon_code)}">Rotate key</button></td>
+          </tr>`).join('') || emptyTableRow('No beacon has been provisioned yet.', 6)}</tbody>
+      </table></div>
+    </article>`;
+}
+
+function showBeaconKey(beaconCode, deviceKey) {
+  openModal(`
+    <span class="eyebrow">Shown once</span>
+    <h2>${escapeHtml(beaconCode)} device key</h2>
+    <p class="modal-copy">Paste this into <code>attendesk_beacon.ino</code> as <code>BEACON_KEY</code> and flash the ESP32. AttenDesk stores only its hash, so this value cannot be shown again — rotate the key if you lose it.</p>
+    <pre class="key-block">${escapeHtml(deviceKey)}</pre>`);
 }
 
 function webBluetoothCardMarkup() {
@@ -777,6 +1137,99 @@ document.addEventListener('click', async event => {
     }
     return;
   }
+  const startSession = event.target.closest('[data-start-session]');
+  if (startSession) {
+    return openStartSessionDialog(startSession.dataset.startSession, startSession.dataset.subject, startSession.dataset.room);
+  }
+  const manualMark = event.target.closest('[data-manual-mark]');
+  if (manualMark) {
+    return openManualMarkDialog(manualMark.dataset.manualMark, manualMark.dataset.studentName, manualMark.dataset.current);
+  }
+  const closeSession = event.target.closest('[data-close-session]');
+  if (closeSession) {
+    if (!confirm('Close the attendance window now? Every student who has not marked will be recorded absent.')) return;
+    setButtonBusy(closeSession, true, 'Closing…');
+    try {
+      const result = await api(`/api/attendance/sessions/${state.liveSession.id}/close`, { method: 'POST', body: {} });
+      stopLivePolling();
+      toast(`Session closed. ${result.absentWritten} student${result.absentWritten === 1 ? '' : 's'} recorded absent.`);
+      await navigate('live');
+    } catch (error) {
+      toast(error.message || 'The session could not be closed.');
+    } finally {
+      setButtonBusy(closeSession, false);
+    }
+    return;
+  }
+  if (event.target.closest('[data-add-classroom]')) {
+    openModal(`<span class="eyebrow">Classroom registry</span><h2>Add a classroom</h2>
+      <form id="classroom-form">
+        <div class="field-grid"><label>Room number<input name="roomNumber" required placeholder="210" /></label><label>Building<input name="building" placeholder="Main Academic Block" /></label></div>
+        <div class="field-grid"><label>Capacity<input name="capacity" type="number" min="1" placeholder="60" /></label><label>Signal floor (dBm)<input name="minRssi" type="number" min="-127" max="-10" value="-92" /></label></div>
+        <button class="primary" type="submit">Add classroom</button>
+        <p class="field-note">Calibrate the signal floor from the back bench and from the far side of the shared wall before trusting it.</p>
+      </form>`);
+    $('#classroom-form').addEventListener('submit', async formEvent => {
+      formEvent.preventDefault();
+      const button = formEvent.submitter;
+      setButtonBusy(button, true, 'Saving…');
+      try {
+        await api('/api/admin/classrooms', { method: 'POST', body: Object.fromEntries(new FormData(formEvent.target).entries()) });
+        closeModal(); toast('Classroom added'); await navigate('classrooms');
+      } catch (error) { toast(error.message); } finally { setButtonBusy(button, false); }
+    }, { once: true });
+    return;
+  }
+  const addBeacon = event.target.closest('[data-add-beacon]');
+  if (addBeacon) {
+    const classrooms = await api('/api/admin/classrooms');
+    openModal(`<span class="eyebrow">Hardware</span><h2>Provision an ESP32 beacon</h2>
+      <form id="beacon-form">
+        <label>Beacon code<input name="beaconCode" required placeholder="ATTENDESK-210" /></label>
+        <label>Label<input name="label" placeholder="Room 210 beacon" /></label>
+        <label>Classroom<select name="classroomId"><option value="">Assign later</option>${classrooms.map(row => `<option value="${row.id}">${escapeHtml(row.room_number)}${row.building ? ` · ${escapeHtml(row.building)}` : ''}</option>`).join('')}</select></label>
+        <button class="primary" type="submit">Provision and show key</button>
+      </form>`);
+    $('#beacon-form').addEventListener('submit', async formEvent => {
+      formEvent.preventDefault();
+      const button = formEvent.submitter;
+      setButtonBusy(button, true, 'Provisioning…');
+      try {
+        const created = await api('/api/admin/beacons', { method: 'POST', body: Object.fromEntries(new FormData(formEvent.target).entries()) });
+        showBeaconKey(created.beacon_code, created.deviceKey);
+      } catch (error) { toast(error.message); setButtonBusy(button, false); }
+    }, { once: true });
+    return;
+  }
+  const rotateBeacon = event.target.closest('[data-rotate-beacon]');
+  if (rotateBeacon) {
+    if (!confirm(`Rotate the key for ${rotateBeacon.dataset.beaconCode}? The device stops working until you reflash it.`)) return;
+    setButtonBusy(rotateBeacon, true, 'Rotating…');
+    try {
+      const rotated = await api(`/api/admin/beacons/${rotateBeacon.dataset.rotateBeacon}/rotate-key`, { method: 'POST', body: {} });
+      showBeaconKey(rotated.beacon_code, rotated.deviceKey);
+    } catch (error) { toast(error.message); } finally { setButtonBusy(rotateBeacon, false); }
+    return;
+  }
+  if (event.target.closest('[data-change-password]')) {
+    openModal(`<span class="eyebrow">Account</span><h2>Change your password</h2>
+      <form id="password-form">
+        <label>Current password<input name="currentPassword" type="password" autocomplete="current-password" /></label>
+        <label>New password<input name="newPassword" type="password" required minlength="8" autocomplete="new-password" /></label>
+        <button class="primary" type="submit">Update password</button>
+        <p class="field-note">At least 8 characters with both letters and numbers. You will be signed out everywhere else.</p>
+      </form>`);
+    $('#password-form').addEventListener('submit', async formEvent => {
+      formEvent.preventDefault();
+      const button = formEvent.submitter;
+      setButtonBusy(button, true, 'Updating…');
+      try {
+        const result = await api('/api/auth/set-password', { method: 'POST', body: Object.fromEntries(new FormData(formEvent.target).entries()) });
+        closeModal(); toast(result.message);
+      } catch (error) { toast(error.message); } finally { setButtonBusy(button, false); }
+    }, { once: true });
+    return;
+  }
   const peopleButton = event.target.closest('[data-people-role]');
   if (peopleButton) { state.peopleRole = peopleButton.dataset.peopleRole; return navigate('people'); }
   const academicButton = event.target.closest('[data-academic]');
@@ -892,8 +1345,26 @@ $('#menu-button').addEventListener('click', () => {
 });
 $('#sidebar-close').addEventListener('click', closeMobileNavigation);
 $('#sidebar-backdrop').addEventListener('click', closeMobileNavigation);
-$('#profile-avatar').addEventListener('click', async () => { if (confirm('Log out of AttenDesk?')) { if (state.refresh) await api('/api/auth/logout', { method: 'POST', body: { refreshToken: state.refresh } }).catch(() => null); sessionStorage.clear(); location.reload(); } });
+$('#profile-avatar').addEventListener('click', () => {
+  openModal(`<span class="eyebrow">Signed in as</span><h2>${escapeHtml(state.user.full_name)}</h2>
+    <p class="modal-copy">${escapeHtml(state.user.email)} · ${titleCase(state.user.role)}</p>
+    <div class="stacked-actions">
+      ${state.user.role === 'student' ? '' : '<button class="secondary" data-change-password>Change password</button>'}
+      <button class="primary" data-action="logout">Log out</button>
+    </div>`);
+});
+document.addEventListener('input', event => {
+  if (event.target.id === 'roster-search') {
+    state.rosterFilter = event.target.value;
+    const list = $('#roster-list');
+    if (list && state.liveSession?.roster) list.innerHTML = rosterMarkup(state.liveSession.roster);
+  }
+});
 document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeModal(); closeMobileNavigation(); } });
 
 bindInteractiveDepth(document);
 if (state.token && state.user) showApp();
+
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}
