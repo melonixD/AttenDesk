@@ -54,7 +54,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   const authenticate = asyncRoute(async (req, res, next) => {
     const raw = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
     const claims = verifyAccessToken(authSecret, raw);
-    if (!claims) return res.status(401).json({ error: "UNAUTHORISED" });
+    if (!claims || !['admin', 'teacher', 'student'].includes(claims.role)) return res.status(401).json({ error: "UNAUTHORISED" });
     const user = await db.query("SELECT id, organization_id, email, full_name, role, status FROM users WHERE id=$1", [claims.sub]);
     if (!user.rows[0] || user.rows[0].status !== "active") return res.status(401).json({ error: "ACCOUNT_INACTIVE" });
     req.user = user.rows[0];
@@ -96,7 +96,8 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     );
     return mailer.sendOtp({ email, code, purpose });
   };
-  const consumeOtp = async ({ organizationId, email, purpose, code }) => db.transaction(async (client) => {
+  const consumeOtp = async ({ organizationId, email, purpose, code }) => {
+    const result = await db.transaction(async (client) => {
     const found = await client.query(
       "SELECT * FROM otp_challenges WHERE organization_id=$1 AND lower(email)=lower($2) AND purpose=$3 AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
       [organizationId, email, purpose]
@@ -106,11 +107,13 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     if (challenge.attempts >= 5) throw Object.assign(new Error("Too many incorrect attempts"), { status: 429, code: "OTP_LOCKED" });
     if (otpHash(otpSecret, organizationId, email, code) !== challenge.code_hash) {
       await client.query("UPDATE otp_challenges SET attempts=attempts+1 WHERE id=$1", [challenge.id]);
-      throw Object.assign(new Error("Incorrect OTP"), { status: 400, code: "OTP_INCORRECT" });
+      return false;
     }
     await client.query("UPDATE otp_challenges SET consumed_at=now() WHERE id=$1", [challenge.id]);
-    return client;
-  });
+    return true;
+    });
+    if (!result) throw Object.assign(new Error('Incorrect OTP'), { status: 400, code: 'OTP_INCORRECT' });
+  };
   const timetableConflict = async (client, { organizationId, offeringId, dayOfWeek, startsAt, endsAt, room, validFrom, validUntil, excludeId = null }) => {
     const result = await client.query(
       `SELECT t.id,su.name AS subject,u.full_name AS teacher,sc.name AS section,t.room,
@@ -286,7 +289,9 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const byEmail = identifier.includes("@");
     const organization = byEmail
       ? await organizationForEmail(cleanEmail(identifier))
-      : (await db.query("SELECT * FROM organizations ORDER BY created_at LIMIT 1")).rows[0];
+      : process.env.COLLEGE_EMAIL_DOMAIN
+        ? await organizationForEmail(`login@${process.env.COLLEGE_EMAIL_DOMAIN}`)
+        : (await db.query("SELECT * FROM organizations ORDER BY created_at LIMIT 1")).rows[0];
     if (!organization) return res.status(403).json({ error: "UNKNOWN_COLLEGE", message: "This college is not configured yet" });
     const found = await db.query(
       `SELECT id,organization_id,email,username,full_name,role,status,password_hash FROM users
@@ -319,7 +324,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       return res.status(401).json({ error: "INVALID_CREDENTIALS", message: "Name and roll number do not match a registered student" });
     }
     if (user.status !== "active") return res.status(403).json({ error: "ACCOUNT_NOT_ACTIVE", message: "Your account is waiting for administrator approval" });
-    if (studentPasswordRequired) {
+    if (studentPasswordRequired || user.password_hash) {
       if (!verifyPassword(String(req.body.password || ""), user.password_hash)) {
         return res.status(401).json({ error: "INVALID_CREDENTIALS", message: "Incorrect password" });
       }
@@ -342,12 +347,8 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   app.post("/api/auth/device-change-request", asyncRoute(async (req, res) => {
     const changeClaims = verifyAccessToken(authSecret, String(req.headers.authorization || "").replace(/^Bearer\s+/i, ""));
     if (!changeClaims || changeClaims.role !== "device_change") return res.status(401).json({ error: "DEVICE_CHANGE_VERIFICATION_REQUIRED" });
-    const email = cleanEmail(req.body.email);
-    const organization = await organizationForEmail(email);
-    if (!organization) return res.status(400).json({ error: "UNKNOWN_COLLEGE" });
-    const user = await db.query("SELECT id FROM users WHERE organization_id=$1 AND lower(email)=lower($2) AND role='student' AND status='active'", [organization.id, email]);
+    const user = await db.query("SELECT id FROM users WHERE organization_id=$1 AND id=$2 AND role='student' AND status='active'", [changeClaims.org, changeClaims.sub]);
     if (!user.rowCount) return res.status(404).json({ error: "STUDENT_NOT_FOUND" });
-    if (user.rows[0].id !== changeClaims.sub || organization.id !== changeClaims.org) return res.status(403).json({ error: "DEVICE_CHANGE_TOKEN_MISMATCH" });
     const missing = required(req.body, ["installationId", "deviceName", "reason"]);
     if (missing.length) return res.status(400).json({ error: "MISSING_FIELDS", fields: missing });
     const active = await db.query("SELECT id FROM student_devices WHERE student_id=$1 AND status='active'", [user.rows[0].id]);
@@ -785,6 +786,11 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       ? await db.query("SELECT id, beacon_code, label, last_seen_at, status FROM beacons WHERE classroom_id=$1 AND enabled=true LIMIT 1", [classroomId])
       : { rows: [] };
     const beaconId = beaconRow.rows[0]?.id || null;
+    if (process.env.REQUIRE_ESP32 !== 'false') {
+      if (!beaconId) return res.status(409).json({ error: 'ESP32_REQUIRED', message: 'Register and assign an ESP32 beacon to this classroom first.' });
+      const seen = beaconRow.rows[0].last_seen_at;
+      if (!seen || Date.now() - new Date(seen).getTime() >= beaconOfflineSeconds * 1000) return res.status(409).json({ error: 'BEACON_OFFLINE', message: 'The classroom ESP32 is offline. Check its power, Wi-Fi, API address and device key.' });
+    }
     if (enforceTimetable) {
       const scheduled = await db.query(
         `SELECT t.id FROM timetable_entries t JOIN course_offerings o ON o.id=t.offering_id JOIN organizations org ON org.id=o.organization_id
@@ -1144,8 +1150,8 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const session = await db.query(
       `SELECT a.id, a.ends_at, su.name AS subject
        FROM attendance_sessions a JOIN course_offerings o ON o.id=a.offering_id JOIN subjects su ON su.id=o.subject_id
-       WHERE a.classroom_id=$1 AND a.status='active' AND a.ends_at>now() ORDER BY a.starts_at DESC LIMIT 1`,
-      [beacon.classroom_id]
+       WHERE a.classroom_id=$1 AND a.beacon_id=$2 AND a.organization_id=$3 AND a.status='active' AND a.ends_at>now() ORDER BY a.starts_at DESC LIMIT 1`,
+      [beacon.classroom_id, beacon.id, beacon.organization_id]
     );
     if (!session.rowCount) {
       return res.json({ advertise: false, reason: "NO_ACTIVE_SESSION", pollAfterSeconds: 5, serverTime: Date.now() });
@@ -1376,6 +1382,8 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   app.get("*", (_req, res) => res.sendFile(`${webRoot}/index.html`));
 
   app.use((error, req, res, _next) => {
+    if (['42P01', '42703'].includes(error.code)) return res.status(503).json({ error: 'DATABASE_MIGRATION_REQUIRED', message: 'Database setup is incomplete. The administrator must run npm run migrate against this deployment database.' });
+    if (['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', '28P01', '3D000'].includes(error.code)) return res.status(503).json({ error: 'DATABASE_UNAVAILABLE', message: 'Cannot connect to the database. Check the hosting DATABASE_URL and database availability.' });
     const databaseStatus = error.code === "23505" ? 409 : ["23503", "23514", "22P02"].includes(error.code) ? 400 : 500;
     const status = Number(error.status || databaseStatus);
     if (status >= 500) console.error(`[${req.requestId}]`, error);

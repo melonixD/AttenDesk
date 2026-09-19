@@ -14,9 +14,13 @@ let handler;
 
 export default function vercelHandler(req, res) {
   if (!handler) {
-    const app = express();
-    createProductionApp({ db: createDatabase(), app });
-    handler = app;
+    try {
+      const app = express();
+      createProductionApp({ db: createDatabase(), app });
+      handler = app;
+    } catch {
+      return res.status(503).json({ error: 'SERVER_NOT_CONFIGURED', message: 'Server setup is incomplete. Configure DATABASE_URL, AUTH_SECRET, OTP_SECRET and BARCODE_PEPPER in hosting, then redeploy.' });
+    }
   }
   return handler(req, res);
 }

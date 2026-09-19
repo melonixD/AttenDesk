@@ -32,7 +32,7 @@ window. A code that leaves the room is worthless almost immediately.
    Use the code `ATTENDESK-<room>`, e.g. `ATTENDESK-210`.
 2. Copy the device key shown. **It is displayed once.** Only its hash is stored.
 3. In `attendesk_beacon.ino` set `WIFI_SSID`, `WIFI_PASSWORD`, `API_BASE`,
-   `BEACON_CODE` and `BEACON_KEY`.
+   `BEACON_CODE`, `BEACON_KEY`, `ROOM_LABEL` and `ROOT_CA`. Use an HTTPS URL.
 4. Flash. The serial monitor at 115200 baud should print `[wifi] connected`,
    `[ble] stack ready` and then a poll every few seconds.
 5. Mount it near the middle of the room, not next to the shared wall.
@@ -41,28 +41,17 @@ The beacon turns green in **Rooms & beacons** within about a minute.
 
 ## Before a real deployment
 
-`secure.setInsecure()` skips TLS certificate verification. It is fine on a
-closed campus pilot and it is what lets the board talk to a Vercel host without
-a bundled root store, but it means a machine-in-the-middle on campus Wi-Fi could
-impersonate the server. Before you rely on this for real attendance records,
-replace it with a pinned root certificate:
-
-```cpp
-static const char* ROOT_CA = "-----BEGIN CERTIFICATE-----\n...";
-secure.setCACert(ROOT_CA);
-```
-
-Use the root CA of whatever host `API_BASE` points at (ISRG Root X1 for
-Let's Encrypt, Baltimore/DigiCert for Vercel). Also set a real NTP time source
-if you pin, because certificate validation needs a correct clock.
+TLS verification is required. Replace the `ROOT_CA` placeholder with the current
+root CA PEM for your actual API hostname's certificate chain; do not guess the
+issuer from the hosting provider. NTP must be reachable for certificate validation.
+See `../START-HERE.md` for dependency versions and the full setup checklist.
 
 ## Behaviour worth knowing
 
 - If Wi-Fi drops, the beacon **stops advertising**. It will not keep publishing
   a code it can no longer confirm is current.
-- Transmit power is set to about +6 dBm so the signal covers a room rather than
-  a corridor. If students at the back cannot connect, raise it to
-  `ESP_PWR_LVL_P9`; if the class next door can see it, drop to `ESP_PWR_LVL_P3`.
+- Transmit power starts at 0 dBm. Calibrate on site using NimBLE 2.x dBm values.
+  Bluetooth crosses walls; power settings cannot enforce classroom boundaries.
 - Web Bluetooth students connect over GATT one at a time. A single ESP32 handles
   a handful of concurrent connections, so a 60-student class will serialise.
   Test this with your real class size before trusting it — the Android app path

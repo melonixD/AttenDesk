@@ -1,7 +1,11 @@
+function savedUser() {
+  try { return JSON.parse(sessionStorage.getItem('attendesk_user') || 'null'); }
+  catch { sessionStorage.removeItem('attendesk_user'); return null; }
+}
 const state = {
   token: sessionStorage.getItem('attendesk_access') || '',
   refresh: sessionStorage.getItem('attendesk_refresh') || '',
-  user: JSON.parse(sessionStorage.getItem('attendesk_user') || 'null'),
+  user: savedUser(),
   loginEmail: '',
   registrationEmail: '',
   catalog: null,
@@ -17,6 +21,7 @@ const state = {
   rosterFilter: ''
 };
 let livePollTimer = null;
+let refreshInFlight = null;
 
 const ATTENDESK_BLE_SERVICE = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
 const ATTENDESK_TOKEN_CHARACTERISTIC = 'd953c2d0-34d8-4d7b-94a7-2f54b42ea6d1';
@@ -64,17 +69,22 @@ async function api(path, options = {}, retried = false) {
   const response = await fetch(path, { ...options, headers, body: options.body && typeof options.body !== 'string' ? JSON.stringify(options.body) : options.body });
   if (response.status === 204) return null;
   const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json') && !/\.(xlsx|pdf)$/.test(path)) {
+    throw new Error('The API did not return JSON. Check Vercel routing, server configuration and deployment logs.');
+  }
   const payload = contentType.includes('application/json') ? await response.json() : await response.blob();
-  if (response.status === 401 && state.refresh && !retried && path !== '/api/auth/refresh') {
-    const refreshed = await fetch('/api/auth/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken: state.refresh }) });
-    if (refreshed.ok) {
+  if (response.status === 401 && state.refresh && !retried && !path.startsWith('/api/auth/')) {
+    if (!refreshInFlight) refreshInFlight = (async () => {
+      const refreshed = await fetch('/api/auth/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refreshToken: state.refresh }) });
+      if (!refreshed.ok) return false;
       const session = await refreshed.json();
       state.token = session.accessToken;
       state.refresh = session.refreshToken;
       sessionStorage.setItem('attendesk_access', state.token);
       sessionStorage.setItem('attendesk_refresh', state.refresh);
-      return api(path, options, true);
-    }
+      return true;
+    })().finally(() => { refreshInFlight = null; });
+    if (await refreshInFlight) return api(path, options, true);
   }
   if (!response.ok) {
     const error = new Error(payload.message || payload.error || 'Request failed');
@@ -356,6 +366,7 @@ $('#student-login-form').addEventListener('submit', async event => {
       method: 'POST',
       body: {
         fullName: $('#student-name').value,
+        password: $('#student-password').value,
         rollNumber: $('#student-roll').value,
         clientType: 'web_ble',
         installationId: installationId(),
@@ -984,7 +995,7 @@ function webBluetoothCardMarkup() {
   if (nearby) {
     return `<article id="web-bluetooth-card" class="panel ble-discovery-panel ble-found"><div class="panel-header"><div><span class="eyebrow"><i class="eyebrow-dot"></i>Classroom beacon connected</span><h2>Available attendance</h2></div><span class="pill">Bluetooth verified</span></div><div class="ble-bubble-wrap"><button class="ble-class-bubble" data-web-ble-scan><span>ROOM ${escapeHtml(nearby.session.room)}</span><strong>${escapeHtml(nearby.session.subject)}</strong><small>${escapeHtml(nearby.session.teacher)} · ${escapeHtml(nearby.session.branch)} ${escapeHtml(nearby.session.section)}</small><b>Scan ID card</b></button><div class="ble-orbit orbit-a"></div><div class="ble-orbit orbit-b"></div></div><p class="ble-explainer">Connected through ${escapeHtml(nearby.deviceName || 'the teacher beacon')}. Keep Bluetooth on and scan the printed barcode on your own college ID.</p><button class="text-button left" data-web-ble-connect>Choose a different beacon</button></article>`;
   }
-  return `<article id="web-bluetooth-card" class="panel ble-discovery-panel"><div class="panel-header"><div><span class="eyebrow">Bluetooth attendance</span><h2>Find your teacher's class</h2></div><span class="pill">Chrome · Android</span></div><div class="ble-ready"><span class="ble-symbol">${icon('bluetooth',28)}</span><div><strong>Bluetooth is requested only after you tap.</strong><p>The browser will show nearby Attendesk teacher beacons. Select the beacon in your classroom.</p></div><button class="primary ble-connect-button" data-web-ble-connect>Find nearby class</button></div><p class="ble-explainer">Requires HTTPS, Bluetooth enabled, Chrome on Android, and the teacher's Beacon companion app broadcasting an active session.</p></article>`;
+  return `<article id="web-bluetooth-card" class="panel ble-discovery-panel"><div class="panel-header"><div><span class="eyebrow">Bluetooth attendance</span><h2>Find your teacher's class</h2></div><span class="pill">Chrome · Android</span></div><div class="ble-ready"><span class="ble-symbol">${icon('bluetooth',28)}</span><div><strong>Bluetooth is requested only after you tap.</strong><p>The browser will show nearby Attendesk classroom beacons. Select your classroom's ESP32.</p></div><button class="primary ble-connect-button" data-web-ble-connect>Find nearby class</button></div><p class="ble-explainer">Requires HTTPS, Bluetooth enabled, Chrome on Android, and an online classroom ESP32 broadcasting an active attendance session.</p></article>`;
 }
 
 function tokenFromDataView(value) {
@@ -1017,7 +1028,7 @@ async function discoverWebBluetoothClass() {
     const token = tokenFromDataView(value);
     if (!/^[a-f0-9]{16}$/.test(token)) throw new Error('The selected Bluetooth device is not a valid Attendesk beacon.');
     const session = await api(`/api/attendance/beacons/${token}`);
-    state.webBleNearby = { session, token, deviceName: device.name || 'Attendesk teacher beacon' };
+    state.webBleNearby = { session, token, device, deviceName: device.name || 'Attendesk classroom beacon' };
     const card = $('#web-bluetooth-card');
     if (card) card.outerHTML = webBluetoothCardMarkup();
     toast(`${session.subject} is ready`);
@@ -1076,6 +1087,15 @@ async function markAttendanceFromWebsite() {
   if (!nearby) throw new Error('Connect to the classroom Bluetooth beacon first.');
   const barcode = await scanBarcodeWithCamera();
   closeModal();
+  // The camera may take longer than a beacon-code rotation. Read again before submission.
+  try {
+    const server = await connectGattWithRetry(nearby.device);
+    const service = await server.getPrimaryService(ATTENDESK_BLE_SERVICE);
+    const characteristic = await service.getCharacteristic(ATTENDESK_TOKEN_CHARACTERISTIC);
+    nearby.token = tokenFromDataView(await characteristic.readValue());
+  } finally {
+    if (nearby.device?.gatt.connected) nearby.device.gatt.disconnect();
+  }
   await api(`/api/attendance/sessions/${nearby.session.id}/mark`, {
     method: 'POST',
     body: { installationId: installationId(), barcode, beaconToken: nearby.token }

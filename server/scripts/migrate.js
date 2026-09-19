@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { createDatabase } from "../src/db.js";
+import { hashPassword, passwordProblem } from '../src/security.js';
 
 const db = createDatabase();
 
@@ -43,6 +44,8 @@ try {
   const college = String(process.env.COLLEGE_NAME || "").trim();
   const adminEmail = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
   if (domain && college && adminEmail) {
+    const initialPassword = process.env.ADMIN_PASSWORD;
+    if (initialPassword && passwordProblem(initialPassword)) throw new Error(passwordProblem(initialPassword));
     const organization = await db.query(
       `INSERT INTO organizations(name,email_domain,timezone,attendance_threshold)
        VALUES($1,$2,$3,$4) ON CONFLICT(email_domain) DO UPDATE SET name=EXCLUDED.name RETURNING id`,
@@ -53,6 +56,11 @@ try {
        VALUES($1,$2,$3,'admin','active') ON CONFLICT(organization_id,email) DO UPDATE SET role='admin',status='active'`,
       [organization.rows[0].id, adminEmail, process.env.ADMIN_NAME || "Main Administrator"]
     );
+    if (initialPassword) {
+      await db.query(`UPDATE users SET password_hash=$1,password_set_at=now(),username=COALESCE(username,$2)
+        WHERE organization_id=$3 AND email=$4 AND password_hash IS NULL`,
+        [hashPassword(initialPassword), process.env.ADMIN_USERNAME || adminEmail.split('@')[0], organization.rows[0].id, adminEmail]);
+    }
   }
   console.log("Database migration completed");
 } finally {

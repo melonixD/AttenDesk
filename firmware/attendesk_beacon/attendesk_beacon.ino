@@ -8,8 +8,8 @@
  * The advertised value is a rotating 8-byte code that changes every 30
  * seconds. That is what makes this different from a beacon broadcasting a
  * fixed room name: a code copied out of the room and sent to a friend at home
- * stops working within one rotation, so it cannot be used for proxy
- * attendance.
+ * expires after the accepted time windows. A live relay is still possible;
+ * Bluetooth alone cannot guarantee classroom presence.
  *
  * Board:    ESP32 / ESP32-C3 / ESP32-S3 (Arduino core 2.x or 3.x)
  * Library:  NimBLE-Arduino  (Library Manager -> "NimBLE-Arduino", h2zero)
@@ -25,6 +25,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>     // Library Manager -> "ArduinoJson" (Benoit Blanchon)
 #include <NimBLEDevice.h>
+#include <time.h>
 
 /* ----------------------------- CONFIGURE ME ----------------------------- */
 static const char* WIFI_SSID     = "HBTU-Campus";
@@ -36,8 +37,11 @@ static const char* API_BASE      = "https://attendesk.vercel.app";
 // From the admin panel. Different on every board.
 static const char* BEACON_CODE   = "ATTENDESK-210";
 static const char* BEACON_KEY    = "paste-the-device-key-shown-once";
+static const char* ROOM_LABEL    = "AD-210"; // ASCII, at most 11 bytes (scan-response budget).
+// Paste the PEM root CA for your HTTPS deployment here. Never disable TLS verification.
+static const char* ROOT_CA = R"PEM(PASTE_YOUR_ROOT_CA_CERTIFICATE_HERE)PEM";
 
-static const char* FIRMWARE_VERSION = "1.0.0";
+static const char* FIRMWARE_VERSION = "1.1.0";
 /* ------------------------------------------------------------------------ */
 
 // Must match ATTENDESK_BLE_SERVICE in public/app.js and BleSessionManager.kt.
@@ -93,8 +97,8 @@ static void connectWifi() {
 }
 
 static void startBle() {
-  NimBLEDevice::init(String("AttenDesk ").concat(BEACON_CODE).c_str());
-  NimBLEDevice::setPower(ESP_PWR_LVL_P6);   // ~+6 dBm: room-sized, not corridor-sized
+  NimBLEDevice::init(ROOM_LABEL);
+  NimBLEDevice::setPower(0); // dBm; measure actual coverage, walls do not contain BLE.
 
   bleServer = NimBLEDevice::createServer();
   NimBLEService* service = bleServer->createService(SERVICE_UUID);
@@ -103,8 +107,11 @@ static void startBle() {
   service->start();
 
   advertising = NimBLEDevice::getAdvertising();
-  advertising->addServiceUUID(SERVICE_UUID);
-  advertising->setScanResponse(true);
+  advertising->enableScanResponse(true);
+  NimBLEAdvertisementData scan;
+  scan.addServiceUUID(NimBLEUUID(SERVICE_UUID));
+  scan.setName(std::string(ROOM_LABEL).substr(0, 11));
+  advertising->setScanResponseData(scan);
   Serial.println("[ble] stack ready (idle, not advertising)");
 }
 
@@ -128,18 +135,13 @@ static void publishCode(const String& code) {
   NimBLEAdvertisementData payload;
   payload.setFlags(0x06);
   payload.setServiceData(NimBLEUUID(SERVICE_UUID), std::string((char*)raw, sizeof(raw)));
+  advertising->stop();
   advertising->setAdvertisementData(payload);
-
-  if (!advertisingNow) {
-    advertising->start();
-    advertisingNow = true;
-    Serial.println("[ble] advertising started");
-  }
+  advertisingNow = advertising->start();
   currentCode = code;
 }
 
 static void stopAdvertising() {
-  if (!advertisingNow) return;
   advertising->stop();
   advertisingNow = false;
   currentCode = "";
@@ -154,9 +156,9 @@ static bool poll() {
   String url = String(API_BASE) + "/api/beacon/poll";
   HTTPClient http;
   WiFiClientSecure secure;
-  secure.setInsecure();   // See firmware/README.md before a real deployment.
+  secure.setCACert(ROOT_CA);
 
-  bool began = url.startsWith("https") ? http.begin(secure, url) : http.begin(url);
+  bool began = url.startsWith("https://") && http.begin(secure, url);
   if (!began) return false;
 
   http.setTimeout(6000);
@@ -207,8 +209,9 @@ static void reportBoot() {
   String url = String(API_BASE) + "/api/beacon/event";
   HTTPClient http;
   WiFiClientSecure secure;
-  secure.setInsecure();
-  if (!(url.startsWith("https") ? http.begin(secure, url) : http.begin(url))) return;
+  secure.setCACert(ROOT_CA);
+  if (!url.startsWith("https://") || !http.begin(secure, url)) return;
+  http.setTimeout(6000);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Beacon-Code", BEACON_CODE);
   http.addHeader("X-Beacon-Key", BEACON_KEY);
@@ -221,6 +224,7 @@ void setup() {
   delay(300);
   Serial.printf("\nAttenDesk beacon %s (firmware %s)\n", BEACON_CODE, FIRMWARE_VERSION);
   connectWifi();
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
   startBle();
   reportBoot();
   nextPollAt = millis();
@@ -236,7 +240,10 @@ void loop() {
   }
   if ((int32_t)(millis() - nextPollAt) >= 0) {
     bool ok = poll();
+    if (!ok) stopAdvertising();
     nextPollAt = millis() + (ok ? pollInterval : IDLE_POLL_MS);
   }
+  // A BLE connection stops advertising. Resume after it disconnects.
+  if (advertisingNow && !advertising->isAdvertising() && bleServer->getConnectedCount() == 0) advertising->start();
   delay(50);
 }

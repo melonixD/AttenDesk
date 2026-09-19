@@ -1,5 +1,8 @@
 # AttenDesk
 
+Start with [START-HERE.md](START-HERE.md) for repaired login, account recovery,
+required environment variables and the ESP32 setup. It supersedes older setup notes.
+
 Classroom attendance for **Harcourt Butler Technical University**, verified by a
 server-controlled ESP32 Bluetooth beacon in each room plus the barcode already
 printed on the student's ID card.
@@ -19,7 +22,8 @@ Instead the beacon polls the API every two seconds and is handed
 `HMAC(server-secret, session-id + current-30-second-window)`, truncated to 8
 bytes. It advertises that and nothing else. It never learns a subject, a room
 roster or a student name. A code forwarded to somebody outside the room expires
-within one rotation window, so it cannot be used for proxy attendance.
+after the accepted current/previous time windows. It can still be relayed while
+valid; this is not cheat-proof proximity verification.
 
 Two independent checks sit on top: the code only resolves to a session the
 student is actually enrolled in, and the server refuses two active sessions in

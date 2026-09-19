@@ -11,7 +11,7 @@
  * only their hashes are stored. If you lose one, rotate it from the admin panel.
  */
 import { createDatabase } from "../src/db.js";
-import { hashPassword, keyedHash, randomToken, sha256 } from "../src/security.js";
+import { hashPassword, keyedHash, passwordProblem, randomToken, sha256 } from "../src/security.js";
 
 const db = createDatabase();
 const pepper = process.env.BARCODE_PEPPER;
@@ -26,7 +26,7 @@ const upsertUser = async ({ orgId, email, username, fullName, role, password }) 
   const existing = await one("SELECT id FROM users WHERE organization_id=$1 AND lower(email)=lower($2)", [orgId, email]);
   if (existing) {
     await db.query(
-      "UPDATE users SET full_name=$2, role=$3, status='active', username=$4, password_hash=COALESCE($5,password_hash), password_set_at=CASE WHEN $5 IS NULL THEN password_set_at ELSE now() END WHERE id=$1",
+      "UPDATE users SET full_name=$2, username=$4, password_set_at=CASE WHEN password_hash IS NULL AND $5 IS NOT NULL THEN now() ELSE password_set_at END, password_hash=COALESCE(password_hash,$5) WHERE id=$1 AND role=$3",
       [existing.id, fullName, role, username || null, password ? hashPassword(password) : null]
     );
     return existing.id;
@@ -40,6 +40,9 @@ const upsertUser = async ({ orgId, email, username, fullName, role, password }) 
 };
 
 try {
+  for (const name of ['SEED_ADMIN_PASSWORD', 'SEED_TEACHER_PASSWORD']) {
+    if (passwordProblem(process.env[name])) throw new Error(`Set ${name} to a unique password containing 8+ characters, letters and numbers before seeding.`);
+  }
   console.log("Seeding Harcourt Butler Technical University…\n");
 
   /* --- Organisation ------------------------------------------------------ */
@@ -51,7 +54,7 @@ try {
   console.log(`  organisation  Harcourt Butler Technical University (@${DOMAIN})`);
 
   /* --- Administrators ---------------------------------------------------- */
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD || "7u87u87u8";
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD;
   await upsertUser({ orgId: org.id, email: `melonix@${DOMAIN}`, username: "melonix", fullName: "Akshat Shukla", role: "admin", password: adminPassword });
   await upsertUser({ orgId: org.id, email: `babatillu@${DOMAIN}`, username: "babatillu", fullName: "Priyanshu", role: "admin", password: adminPassword });
   console.log("  admins        melonix, babatillu");
@@ -91,7 +94,7 @@ try {
   const teacherId = await upsertUser({
     orgId: org.id, email: `alakh@${DOMAIN}`, username: "alakh",
     fullName: "Alakh Kumar Singh", role: "teacher",
-    password: process.env.SEED_TEACHER_PASSWORD || "Alakh7u8"
+    password: process.env.SEED_TEACHER_PASSWORD
   });
   await db.query(
     `INSERT INTO teachers(user_id,employee_code,branch_id) VALUES($1,'HBTU-FOF-001',$2)

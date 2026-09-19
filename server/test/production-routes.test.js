@@ -64,6 +64,29 @@ async function request(path, token, body) {
   return { status: response.status, body: await response.json() };
 }
 
+test("device-change token cannot authenticate as the underlying student", async () => {
+  const token = issueAccessToken(AUTH_SECRET, { sub: STUDENT_ID, org: ORG_ID, role: "device_change" });
+  const response = await fetch(`${baseUrl}/api/me`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error, "UNAUTHORISED");
+});
+
+for (const [code, expected] of [['42P01', 'DATABASE_MIGRATION_REQUIRED'], ['ECONNREFUSED', 'DATABASE_UNAVAILABLE']]) {
+  test(`database ${code} produces actionable login error`, async () => {
+    const brokenDb = { query: async () => { throw Object.assign(new Error('test database failure'), { code }); } };
+    const instance = http.createServer(createProductionApp({ db: brokenDb, mailer: { sendOtp: async () => ({}) } }));
+    await new Promise(resolve => instance.listen(0, '127.0.0.1', resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${instance.address().port}/api/auth/login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier: 'admin@college.edu', password: 'TestPassword99' })
+      });
+      assert.equal(response.status, 503);
+      assert.equal((await response.json()).error, expected);
+    } finally { await new Promise(resolve => instance.close(resolve)); }
+  });
+}
+
 test("invalid enrollment is not reported as successful", async () => {
   const token = issueAccessToken(AUTH_SECRET, { sub: ADMIN_ID, org: ORG_ID, role: "admin", clientType: "web" });
   const result = await request("/api/admin/enrollments", token, { offeringId: "missing", studentId: "missing" });
