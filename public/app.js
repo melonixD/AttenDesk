@@ -613,10 +613,25 @@ async function renderAdminPage(page) {
 async function renderAdminOverview() {
   heading('Administration', 'College overview');
   const data = await api('/api/admin/overview');
+  const setupSteps = [
+    { label: 'Academic structure', note: 'Add a branch, semester, section and subject', complete: Number(data.branches) > 0 && Number(data.semesters) > 0 && Number(data.sections) > 0 && Number(data.subjects) > 0, page: 'academic' },
+    { label: 'Teacher accounts', note: 'Create at least one teacher with login credentials', complete: Number(data.teachers) > 0, page: 'people', peopleRole: 'teacher' },
+    { label: 'Student accounts', note: 'Create or import students and register barcodes', complete: Number(data.students) > 0, page: 'people', peopleRole: 'student' },
+    { label: 'Course allocation', note: 'Assign subject, teacher and section', complete: Number(data.offerings) > 0, page: 'courses' },
+    { label: 'Classroom', note: 'Register the room used for attendance', complete: Number(data.classrooms) > 0, page: 'classrooms' },
+    { label: 'ESP32 beacon', note: 'Provision and flash a beacon when hardware arrives', complete: Number(data.beacons) > 0, page: 'classrooms', optional: true }
+  ];
+  const requiredSteps = setupSteps.filter(step => !step.optional);
+  const completedSteps = requiredSteps.filter(step => step.complete).length;
   $('#page-content').innerHTML = `
     <section class="metrics">
       ${metric(data.students, 'Students', 'Active academic records', true)}${metric(data.teachers, 'Teachers', 'Approved faculty')}${metric(data.registrations, 'Pending accounts', 'Needs review')}${metric(data.sessions_today, 'Sessions today', 'Across all classes')}
     </section>
+    <article class="panel setup-panel">
+      <div class="panel-header"><div><span class="eyebrow">First-time setup</span><h2>Make Attendesk ready for a real class</h2></div><span class="pill ${completedSteps === requiredSteps.length ? '' : 'warn'}">${completedSteps}/${requiredSteps.length} required steps</span></div>
+      <div class="setup-progress"><i style="width:${Math.round((completedSteps / requiredSteps.length) * 100)}%"></i></div>
+      <div class="setup-grid">${setupSteps.map((step, index) => `<button class="setup-step ${step.complete ? 'complete' : ''}" data-page="${step.page}" ${step.peopleRole ? `data-setup-people="${step.peopleRole}"` : ''}><span>${step.complete ? icon('check', 16) : String(index + 1)}</span><div><strong>${escapeHtml(step.label)}${step.optional ? ' · optional' : ''}</strong><small>${escapeHtml(step.note)}</small></div><i>${icon('arrow', 15)}</i></button>`).join('')}</div>
+    </article>
     <section class="split">
       <article class="panel"><div class="panel-header"><div><span class="eyebrow">Attention queue</span><h2>Tasks waiting for you</h2></div><span class="pill warn">${Number(data.registrations) + Number(data.device_requests)} pending</span></div>
         <div class="action-grid"><button class="action-card" data-page="registrations"><span class="action-icon">${icon('check')}</span><span><strong>${data.registrations} registration requests</strong><small>Verify student and teacher details</small></span><i>${icon('arrow',15)}</i></button><button class="action-card" data-page="devices"><span class="action-icon">${icon('phone')}</span><span><strong>${data.device_requests} device changes</strong><small>Review phone replacement requests</small></span><i>${icon('arrow',15)}</i></button><button class="action-card" data-page="academic"><span class="action-icon">${icon('building')}</span><span><strong>Academic structure</strong><small>Branches, subjects and semesters</small></span><i>${icon('arrow',15)}</i></button></div>
@@ -639,7 +654,7 @@ async function renderRegistrations() {
 async function renderPeople() {
   heading('Directory', 'People and credentials');
   const rows = await api(`/api/admin/people?role=${state.peopleRole}`);
-  $('#page-content').innerHTML = `<div class="tab-row"><button class="tab ${state.peopleRole === 'student' ? 'active' : ''}" data-people-role="student">Students</button><button class="tab ${state.peopleRole === 'teacher' ? 'active' : ''}" data-people-role="teacher">Teachers</button></div><article class="panel"><div class="panel-header"><div><span class="eyebrow">Approved accounts</span><h2>${titleCase(state.peopleRole)} directory</h2></div><span class="pill">${rows.length} records</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Person</th><th>Identifier</th><th>Academic assignment</th><th>${state.peopleRole === 'student' ? 'ID and device' : 'Status'}</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><td><div class="person"><span class="person-avatar">${escapeHtml(row.full_name[0])}</span><div><strong>${escapeHtml(row.full_name)}</strong><br /><small>${escapeHtml(row.email)}</small></div></div></td><td>${escapeHtml(row.roll_number || row.employee_code)}</td><td>${escapeHtml([row.branch, row.semester && `Sem ${row.semester}`, row.section && `Section ${row.section}`].filter(Boolean).join(' · ') || '—')}</td><td>${state.peopleRole === 'student' ? `${row.barcode_status ? `Barcode ••••${escapeHtml(row.barcode_last_four)}` : '<span class="warning-text">No barcode</span>'}<br /><small>${escapeHtml(row.device_name || 'No device')} · ${titleCase(row.status)}</small>` : titleCase(row.status)}</td><td>${state.peopleRole === 'student' ? `<button class="table-action" data-register-barcode="${row.id}" data-student-name="${escapeHtml(row.full_name)}">Register barcode</button> ` : ''}<button class="table-action ${row.status==='active'?'danger':''}" data-user-status="${row.id}" data-current-status="${row.status}">${row.status==='active'?'Suspend':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></article>`;
+  $('#page-content').innerHTML = `<div class="tab-row"><button class="tab ${state.peopleRole === 'student' ? 'active' : ''}" data-people-role="student">Students</button><button class="tab ${state.peopleRole === 'teacher' ? 'active' : ''}" data-people-role="teacher">Teachers</button></div><article class="panel"><div class="panel-header"><div><span class="eyebrow">Approved accounts</span><h2>${titleCase(state.peopleRole)} directory</h2></div><div class="panel-actions">${state.peopleRole === 'student' ? '<button class="secondary compact" data-import-students>Import CSV</button>' : ''}<button class="primary compact" data-add-person="${state.peopleRole}">Add ${state.peopleRole}</button><span class="pill">${rows.length} records</span></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Person</th><th>Identifier</th><th>Academic assignment</th><th>${state.peopleRole === 'student' ? 'ID and device' : 'Status'}</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><td><div class="person"><span class="person-avatar">${escapeHtml(row.full_name[0])}</span><div><strong>${escapeHtml(row.full_name)}</strong><br /><small>${escapeHtml(row.email)}</small></div></div></td><td>${escapeHtml(row.roll_number || row.employee_code)}</td><td>${escapeHtml([row.branch, row.semester && `Sem ${row.semester}`, row.section && `Section ${row.section}`].filter(Boolean).join(' · ') || '—')}</td><td>${state.peopleRole === 'student' ? `${row.barcode_status ? `Barcode ••••${escapeHtml(row.barcode_last_four)}` : '<span class="warning-text">No barcode</span>'}<br /><small>${escapeHtml(row.device_name || 'No device')} · ${titleCase(row.status)}</small>` : titleCase(row.status)}</td><td>${state.peopleRole === 'student' ? `<button class="table-action" data-register-barcode="${row.id}" data-student-name="${escapeHtml(row.full_name)}">Barcode</button> ` : ''}<button class="table-action" data-reset-user-password="${row.id}" data-user-name="${escapeHtml(row.full_name)}">Password</button> <button class="table-action ${row.status==='active'?'danger':''}" data-user-status="${row.id}" data-current-status="${row.status}">${row.status==='active'?'Suspend':'Reactivate'}</button></td></tr>`).join('') || emptyTableRow(`No ${state.peopleRole}s yet. Use the Add ${state.peopleRole} button to create one.`, 5)}</tbody></table></div></article>`;
 }
 
 async function renderAcademic() {
@@ -665,7 +680,9 @@ async function renderCourses() {
     api('/api/admin/sections'), api('/api/admin/academic/semesters'), api('/api/admin/people?role=student')
   ]);
   const courseOptions = offerings.map(row => `<option value="${row.id}">${escapeHtml(row.subject)} · ${escapeHtml(row.branch)} ${escapeHtml(row.section)}</option>`).join('');
-  $('#page-content').innerHTML = `<section class="split"><article class="panel"><div class="panel-header"><div><span class="eyebrow">New course</span><h2>Assign a subject</h2></div></div><form class="compact-form" data-create-offering><label>Subject<select name="subjectId">${subjects.filter(row=>row.active).map(row=>`<option value="${row.id}">${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Teacher<select name="teacherId">${teachers.map(row=>`<option value="${row.id}">${escapeHtml(row.full_name)}</option>`).join('')}</select></label><label>Section<select name="sectionId">${sections.filter(row=>row.active).map(row=>`<option value="${row.id}">${escapeHtml(row.branch_code)} · Sem ${row.semester_number} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Semester<select name="semesterId">${semesters.filter(row=>row.active).map(row=>`<option value="${row.id}">Semester ${row.number} · ${escapeHtml(row.academic_year)}</option>`).join('')}</select></label><label>Default room<input name="defaultRoom" placeholder="210" required /></label><button class="primary">Create course</button></form></article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Roster</span><h2>Enroll a student</h2></div></div><form class="compact-form" data-enroll-student><label>Course<select name="offeringId">${courseOptions}</select></label><label>Student<select name="studentId">${students.map(row=>`<option value="${row.id}">${escapeHtml(row.roll_number)} · ${escapeHtml(row.full_name)}</option>`).join('')}</select></label><button class="primary">Add to roster</button></form></article></section><article class="panel"><div class="panel-header"><div><span class="eyebrow">Current semester</span><h2>Course offerings</h2></div><span class="pill">${offerings.length} courses</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Subject</th><th>Teacher</th><th>Class</th><th>Semester</th><th>Room</th></tr></thead><tbody>${offerings.map(row=>`<tr><td><strong>${escapeHtml(row.subject)}</strong><br/><small>${escapeHtml(row.subject_code)}</small></td><td>${escapeHtml(row.teacher)}</td><td>${escapeHtml(row.branch)} · Section ${escapeHtml(row.section)}</td><td>${row.semester}</td><td>${escapeHtml(row.default_room)}</td></tr>`).join('')}</tbody></table></div></article>`;
+  const canCreateCourse = subjects.some(row => row.active) && teachers.length && sections.some(row => row.active) && semesters.some(row => row.active);
+  const canEnroll = offerings.length && students.length;
+  $('#page-content').innerHTML = `<section class="split"><article class="panel"><div class="panel-header"><div><span class="eyebrow">New course</span><h2>Assign a subject</h2></div></div>${canCreateCourse ? `<form class="compact-form" data-create-offering><label>Subject<select name="subjectId">${subjects.filter(row=>row.active).map(row=>`<option value="${row.id}">${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Teacher<select name="teacherId">${teachers.map(row=>`<option value="${row.id}">${escapeHtml(row.full_name)}</option>`).join('')}</select></label><label>Section<select name="sectionId">${sections.filter(row=>row.active).map(row=>`<option value="${row.id}">${escapeHtml(row.branch_code)} · Sem ${row.semester_number} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Semester<select name="semesterId">${semesters.filter(row=>row.active).map(row=>`<option value="${row.id}">Semester ${row.number} · ${escapeHtml(row.academic_year)}</option>`).join('')}</select></label><label>Default room<input name="defaultRoom" placeholder="210" required /></label><button class="primary">Create course</button></form>` : `<div class="dependency-note"><strong>Complete the prerequisites first.</strong><p>You need an active subject, teacher, semester and section before creating a course.</p><button class="table-action" data-page="academic">Open academic setup</button> <button class="table-action" data-page="people" data-setup-people="teacher">Add teacher</button></div>`}</article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Roster</span><h2>Enroll a student</h2></div></div>${canEnroll ? `<form class="compact-form" data-enroll-student><label>Course<select name="offeringId">${courseOptions}</select></label><label>Student<select name="studentId">${students.map(row=>`<option value="${row.id}">${escapeHtml(row.roll_number)} · ${escapeHtml(row.full_name)}</option>`).join('')}</select></label><button class="primary">Add to roster</button></form>` : `<div class="dependency-note"><strong>${offerings.length ? 'Create or import students.' : 'Create a course first.'}</strong><p>Students can be enrolled after both the course and student account exist.</p><button class="table-action" data-page="people" data-setup-people="student">Open students</button></div>`}</article></section><article class="panel"><div class="panel-header"><div><span class="eyebrow">Current semester</span><h2>Course offerings</h2></div><span class="pill">${offerings.length} courses</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Subject</th><th>Teacher</th><th>Class</th><th>Semester</th><th>Room</th><th>Roster</th></tr></thead><tbody>${offerings.map(row=>`<tr><td><strong>${escapeHtml(row.subject)}</strong><br/><small>${escapeHtml(row.subject_code)}</small></td><td>${escapeHtml(row.teacher)}</td><td>${escapeHtml(row.branch)} · Section ${escapeHtml(row.section)}</td><td>${row.semester}</td><td>${escapeHtml(row.default_room)}</td><td><button class="table-action" data-view-roster="${row.id}" data-course-name="${escapeHtml(row.subject)}">${row.enrolled_students || 0} students</button></td></tr>`).join('') || emptyTableRow('No courses yet. Complete the setup cards above.', 6)}</tbody></table></div></article>`;
 }
 
 async function renderTimetable() {
@@ -1123,9 +1140,130 @@ function closeModal() {
   $('#modal').classList.add('hidden');
 }
 
+async function openAddPersonDialog(role) {
+  const [branches, semesters, sections] = await Promise.all([
+    api('/api/admin/academic/branches'),
+    api('/api/admin/academic/semesters'),
+    api('/api/admin/sections')
+  ]);
+  const activeBranches = branches.filter(row => row.active);
+  const activeSemesters = semesters.filter(row => row.active);
+  const activeSections = sections.filter(row => row.active);
+  if (role === 'student' && (!activeBranches.length || !activeSemesters.length || !activeSections.length)) {
+    openModal(`<span class="eyebrow">Prerequisites needed</span><h2>Create the academic structure first</h2><p class="modal-copy">A student must belong to an active branch, semester and section.</p><button class="primary" data-page="academic">Open academic setup</button>`);
+    return;
+  }
+  const domain = String(state.user.email || '').split('@')[1] || 'hbtu.ac.in';
+  const roleFields = role === 'teacher'
+    ? `<div class="field-grid"><label>Employee code<input name="employeeCode" required autocomplete="off" placeholder="FT-EMP-01" /></label><label>Branch<select name="branchId"><option value="">College-wide / optional</option>${activeBranches.map(row => `<option value="${row.id}">${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label></div><label>Initial password<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters with letters and numbers" /></label>`
+    : `<div class="field-grid"><label>Roll number<input name="rollNumber" required autocomplete="off" /></label><label>Class section<select name="sectionId" id="person-section" required>${activeSections.map(row => `<option value="${row.id}" data-branch-id="${row.branch_id}" data-semester-id="${row.semester_id}">${escapeHtml(row.branch_code)} · Semester ${row.semester_number} · Section ${escapeHtml(row.name)}</option>`).join('')}</select></label></div><div class="field-grid"><label>ID-card barcode<input name="barcode" minlength="4" autocomplete="off" placeholder="Optional now" /></label><label>Initial password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Recommended" /></label></div>`;
+  openModal(`<span class="eyebrow">Direct account creation</span><h2>Add ${escapeHtml(role)}</h2><form id="person-form"><input type="hidden" name="role" value="${role}" /><div class="field-grid"><label>Full name<input name="fullName" required autocomplete="name" /></label><label>College email<input name="email" type="email" required placeholder="name@${escapeHtml(domain)}" autocomplete="email" /></label></div><label>Phone number<input name="phone" inputmode="tel" autocomplete="tel" placeholder="Optional" /></label>${roleFields}<button class="primary" type="submit">Create ${escapeHtml(role)}</button><p class="field-note">${role === 'teacher' ? 'The employee code becomes the teacher username.' : 'The student signs in using this full name, roll number and password if one is assigned.'}</p></form>`);
+  $('#person-form').addEventListener('submit', async formEvent => {
+    formEvent.preventDefault();
+    const button = formEvent.submitter;
+    setButtonBusy(button, true, 'Creating…');
+    try {
+      const body = Object.fromEntries(new FormData(formEvent.target).entries());
+      if (role === 'student') {
+        const section = $('#person-section').selectedOptions[0];
+        body.branchId = section.dataset.branchId;
+        body.semesterId = section.dataset.semesterId;
+      }
+      const result = await api('/api/admin/people', { method: 'POST', body });
+      closeModal();
+      toast(`${titleCase(role)} created · login ${result.loginIdentifier}`);
+      state.peopleRole = role;
+      await navigate('people');
+    } catch (error) {
+      toast(error.message || `Could not create ${role}`);
+    } finally {
+      setButtonBusy(button, false);
+    }
+  }, { once: true });
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [], value = '', quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '"') {
+      if (quoted && text[index + 1] === '"') { value += '"'; index += 1; }
+      else quoted = !quoted;
+    } else if (character === ',' && !quoted) {
+      row.push(value.trim()); value = '';
+    } else if ((character === '\n' || character === '\r') && !quoted) {
+      if (character === '\r' && text[index + 1] === '\n') index += 1;
+      row.push(value.trim()); value = '';
+      if (row.some(cell => cell)) rows.push(row);
+      row = [];
+    } else value += character;
+  }
+  row.push(value.trim());
+  if (row.some(cell => cell)) rows.push(row);
+  if (rows.length < 2) return [];
+  const headers = rows.shift().map(header => header.trim().toLowerCase().replace(/^\uFEFF/, ''));
+  return rows.map(columns => Object.fromEntries(headers.map((header, index) => [header, columns[index] || ''])));
+}
+
+function downloadStudentTemplate() {
+  const content = 'full_name,college_email,roll_number,branch_code,semester,section_name,phone,barcode\nExample Student,student@hbtu.ac.in,250107001,FT,1,A,9876543210,1234567890\n';
+  const url = URL.createObjectURL(new Blob([content], { type: 'text/csv' }));
+  const anchor = document.createElement('a');
+  anchor.href = url; anchor.download = 'attendesk-student-import-template.csv'; anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function openStudentImportDialog() {
+  openModal(`<span class="eyebrow">Bulk onboarding</span><h2>Import students from CSV</h2><p class="modal-copy">Create branches, semesters and sections first. The CSV headers must match the template.</p><button class="secondary compact" type="button" data-download-student-template>Download template</button><form id="student-import-form"><label>CSV file<input name="file" type="file" accept=".csv,text/csv" required /></label><button class="primary" type="submit">Import students</button><p class="field-note">Accepted columns: full_name, college_email, roll_number, branch_code, semester, section_name, phone, barcode. Maximum 1,000 rows.</p></form>`);
+  $('#student-import-form').addEventListener('submit', async formEvent => {
+    formEvent.preventDefault();
+    const button = formEvent.submitter;
+    const file = new FormData(formEvent.target).get('file');
+    if (!(file instanceof File) || !file.size) return toast('Choose a CSV file first');
+    setButtonBusy(button, true, 'Importing…');
+    try {
+      const rows = parseCsv(await file.text());
+      if (!rows.length) throw new Error('The CSV does not contain any student rows');
+      const result = await api('/api/admin/import/students', { method: 'POST', body: { rows } });
+      openModal(`<span class="eyebrow">Import complete</span><h2>${result.created} students created</h2><div class="import-summary"><span>${result.skipped} skipped</span><span>${result.errors.length} errors</span></div>${result.errors.length ? `<div class="import-errors">${result.errors.slice(0, 25).map(item => `<p><strong>Row ${item.row}</strong> ${escapeHtml(item.message)}</p>`).join('')}</div>` : '<p class="modal-copy">Every row was imported successfully.</p>'}<button class="primary" data-action="close-modal">Done</button>`);
+      state.peopleRole = 'student';
+      await navigate('people');
+    } catch (error) {
+      toast(error.message || 'Student import failed');
+    } finally {
+      setButtonBusy(button, false);
+    }
+  }, { once: true });
+}
+
+function openResetPasswordDialog(userId, userName) {
+  openModal(`<span class="eyebrow">Credential recovery</span><h2>Reset ${escapeHtml(userName)}'s password</h2><form id="admin-reset-password-form"><label>New password<input name="password" type="password" minlength="8" required autocomplete="new-password" /></label><button class="primary" type="submit">Reset password</button><p class="field-note">This signs the user out from every existing session.</p></form>`);
+  $('#admin-reset-password-form').addEventListener('submit', async formEvent => {
+    formEvent.preventDefault();
+    const button = formEvent.submitter;
+    setButtonBusy(button, true, 'Resetting…');
+    try {
+      const password = new FormData(formEvent.target).get('password');
+      const result = await api(`/api/admin/users/${userId}/reset-password`, { method: 'POST', body: { password } });
+      closeModal(); toast(result.message);
+    } catch (error) { toast(error.message || 'Password reset failed'); }
+    finally { setButtonBusy(button, false); }
+  }, { once: true });
+}
+
+async function openRosterDialog(offeringId, courseName) {
+  const rows = await api(`/api/admin/enrollments?offeringId=${encodeURIComponent(offeringId)}`);
+  openModal(`<span class="eyebrow">Course roster</span><h2>${escapeHtml(courseName)}</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Student</th><th>Roll number</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.full_name)}</strong><br/><small>${escapeHtml(row.email)}</small></td><td>${escapeHtml(row.roll_number)}</td><td><button class="table-action danger" data-remove-enrollment="${row.id}" data-offering-id="${offeringId}" data-course-name="${escapeHtml(courseName)}">Remove</button></td></tr>`).join('') || emptyTableRow('No students are enrolled yet.', 3)}</tbody></table></div>`);
+}
+
 document.addEventListener('click', async event => {
   const pageButton = event.target.closest('[data-page]');
-  if (pageButton) return navigate(pageButton.dataset.page);
+  if (pageButton) {
+    if (pageButton.dataset.setupPeople) state.peopleRole = pageButton.dataset.setupPeople;
+    closeModal();
+    return navigate(pageButton.dataset.page);
+  }
   const retryButton = event.target.closest('[data-retry-page]');
   if (retryButton) return navigate(retryButton.dataset.retryPage);
   if (event.target.closest('[data-action="logout"]')) {
@@ -1133,6 +1271,38 @@ document.addEventListener('click', async event => {
     sessionStorage.clear(); state.token = ''; state.refresh = ''; state.user = null; location.reload(); return;
   }
   if (event.target.closest('[data-action="close-modal"]')) return closeModal();
+  if (event.target.closest('[data-download-student-template]')) return downloadStudentTemplate();
+  const addPerson = event.target.closest('[data-add-person]');
+  if (addPerson) {
+    setButtonBusy(addPerson, true, 'Loading…');
+    try { await openAddPersonDialog(addPerson.dataset.addPerson); }
+    catch (error) { toast(error.message || 'Could not open account creation'); }
+    finally { setButtonBusy(addPerson, false); }
+    return;
+  }
+  if (event.target.closest('[data-import-students]')) return openStudentImportDialog();
+  const resetPassword = event.target.closest('[data-reset-user-password]');
+  if (resetPassword) return openResetPasswordDialog(resetPassword.dataset.resetUserPassword, resetPassword.dataset.userName);
+  const viewRoster = event.target.closest('[data-view-roster]');
+  if (viewRoster) {
+    setButtonBusy(viewRoster, true, 'Loading…');
+    try { await openRosterDialog(viewRoster.dataset.viewRoster, viewRoster.dataset.courseName); }
+    catch (error) { toast(error.message || 'Could not load the roster'); }
+    finally { setButtonBusy(viewRoster, false); }
+    return;
+  }
+  const removeEnrollment = event.target.closest('[data-remove-enrollment]');
+  if (removeEnrollment) {
+    if (!confirm('Remove this student from the course roster? Existing attendance records are preserved.')) return;
+    setButtonBusy(removeEnrollment, true, 'Removing…');
+    try {
+      await api(`/api/admin/enrollments/${removeEnrollment.dataset.offeringId}/${removeEnrollment.dataset.removeEnrollment}`, { method: 'DELETE' });
+      toast('Student removed from roster');
+      await openRosterDialog(removeEnrollment.dataset.offeringId, removeEnrollment.dataset.courseName);
+    } catch (error) { toast(error.message || 'Could not remove the student'); }
+    finally { setButtonBusy(removeEnrollment, false); }
+    return;
+  }
   const webBleConnect = event.target.closest('[data-web-ble-connect]');
   if (webBleConnect) {
     setButtonBusy(webBleConnect, true, 'Opening Bluetooth…');

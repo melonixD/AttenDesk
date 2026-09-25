@@ -1,4 +1,4 @@
-# Attendesk — login repair and ESP32 setup
+# Attendesk — production setup
 
 This release fixes identified code defects, not an already deployed server. Upload it and configure the database before testing login. Do not use the interface demo at `/demo/` for real attendance.
 
@@ -28,7 +28,19 @@ Set the Root Directory to the folder containing `package.json`, `api/`, `public/
 
 If login still fails, send the deployed URL, selected role and exact error text/screenshot. Do not send passwords, database URLs, service keys or beacon keys. The app now distinguishes missing schema, unavailable database, incomplete server configuration and invalid credentials.
 
-## 4. ESP32 classroom flow
+## 4. Configure the college from the admin panel
+
+The dashboard now includes a first-time setup checklist. Complete it in this order:
+
+1. **Academic setup:** create a branch, semester, section and subject.
+2. **People:** create teachers and students directly, or import students from the downloadable CSV template. Teacher employee codes become their usernames. Student barcodes and initial passwords can be assigned during creation.
+3. **Courses:** assign a subject to a teacher and section, then enroll students. Open a course roster to remove an incorrect enrollment.
+4. **Timetable:** add class periods after the course exists.
+5. **Rooms & beacons:** register the classroom, then provision its ESP32.
+
+Students and teachers may still request their own accounts, but self-registration is no longer required to make a fresh installation usable. Administrators can also reset passwords from **People**; resetting a password revokes that user's existing sessions.
+
+## 5. ESP32 classroom flow
 
 The teacher uses the WEBSITE to start attendance. No teacher phone beacon is required. Keep `REQUIRE_ESP32=true` (the default) so missing/offline ESP32s block opening a session.
 
@@ -37,9 +49,9 @@ The teacher uses the WEBSITE to start attendance. No teacher phone beacon is req
 3. Configure Wi-Fi, your actual HTTPS API URL, room label and the valid root CA PEM certificate. Firmware no longer disables TLS verification. Network time must be available for certificate checks.
 4. Compile the sketch using Arduino ESP32 core 3.x, NimBLE-Arduino 2.5.1 and ArduinoJson 7.x. Use a BLE-capable ESP32; ESP32-S2 has no BLE. The sketch is source-reviewed but has NOT been compiled or tested on hardware here.
 5. Power the board, inspect Serial at 115200 baud, and wait for **Online** in the website.
-6. Assign teacher/course/student enrollments. The teacher selects the room and timer. Students use Chrome on Android over HTTPS, select the ESP32 in the Bluetooth chooser, and scan their registered ID barcode.
+6. Assign teacher/course/student enrollments. The teacher selects the room and timer on the website. Students use the native Android app to scan the ESP32 advertisements and then scan their registered ID barcode. Configure the Android build with the deployed HTTPS API URL before creating the APK.
 
-The internal 30-second code is exchanged automatically over Bluetooth; nobody types or sees a classroom PIN. Firmware now explicitly advertises the service UUID in its scan response and restarts advertising after students disconnect. The website re-reads the token after camera scanning to avoid stale-token failures.
+The internal 30-second code is exchanged automatically over Bluetooth; nobody types or sees a classroom PIN. The ESP32 uses connectionless advertising, so 60 phones listen without making 60 simultaneous Bluetooth connections. Each phone submits its result to the server over mobile data or Wi-Fi.
 
 ## Verification and limits
 

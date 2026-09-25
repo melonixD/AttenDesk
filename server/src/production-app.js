@@ -40,7 +40,9 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   app.set("trust proxy", 1);
   app.disable("x-powered-by");
   app.use(securityHeaders);
-  app.use(express.json({ limit: "100kb", strict: true }));
+  // Large enough for the documented 1,000-row admin CSV import after it is
+  // parsed in the browser, while still keeping unauthenticated request bodies bounded.
+  app.use(express.json({ limit: "1mb", strict: true }));
   app.use((req, res, next) => {
     req.requestId = crypto.randomUUID();
     res.setHeader("X-Request-Id", req.requestId);
@@ -405,7 +407,14 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
         (SELECT count(*) FROM teachers t JOIN users u ON u.id=t.user_id WHERE u.organization_id=$1 AND u.status='active') AS teachers,
         (SELECT count(*) FROM registration_requests WHERE organization_id=$1 AND status='pending_approval') AS registrations,
         (SELECT count(*) FROM device_change_requests d JOIN users u ON u.id=d.student_id WHERE u.organization_id=$1 AND d.status='pending') AS device_requests,
-        (SELECT count(*) FROM attendance_sessions a JOIN course_offerings o ON o.id=a.offering_id WHERE o.organization_id=$1 AND a.starts_at::date=current_date) AS sessions_today`,
+        (SELECT count(*) FROM attendance_sessions a JOIN course_offerings o ON o.id=a.offering_id WHERE o.organization_id=$1 AND a.starts_at::date=current_date) AS sessions_today,
+        (SELECT count(*) FROM branches WHERE organization_id=$1 AND active=true) AS branches,
+        (SELECT count(*) FROM semesters WHERE organization_id=$1 AND active=true) AS semesters,
+        (SELECT count(*) FROM sections sc JOIN branches b ON b.id=sc.branch_id WHERE b.organization_id=$1 AND sc.active=true) AS sections,
+        (SELECT count(*) FROM subjects WHERE organization_id=$1 AND active=true) AS subjects,
+        (SELECT count(*) FROM course_offerings WHERE organization_id=$1 AND active=true) AS offerings,
+        (SELECT count(*) FROM classrooms WHERE organization_id=$1 AND active=true) AS classrooms,
+        (SELECT count(*) FROM beacons WHERE organization_id=$1 AND enabled=true) AS beacons`,
       [req.user.organization_id]
     );
     res.json(result.rows[0]);
@@ -541,6 +550,89 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     res.json(result.rows);
   }));
 
+  app.post("/api/admin/people", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const role = req.body.role;
+    if (!['teacher', 'student'].includes(role)) return res.status(400).json({ error: "BAD_ROLE", message: "Choose student or teacher" });
+    const commonMissing = required(req.body, ["fullName", "email"]);
+    const roleMissing = role === "student"
+      ? required(req.body, ["rollNumber", "branchId", "semesterId", "sectionId"])
+      : required(req.body, ["employeeCode", "password"]);
+    const missing = [...commonMissing, ...roleMissing];
+    if (missing.length) return res.status(400).json({ error: "MISSING_FIELDS", message: `Complete: ${missing.join(", ")}`, fields: missing });
+
+    const email = cleanEmail(req.body.email);
+    const organization = await db.query("SELECT id,email_domain FROM organizations WHERE id=$1", [req.user.organization_id]);
+    const emailDomain = String(organization.rows[0]?.email_domain || "").toLowerCase();
+    if (!emailDomain || email.split("@")[1] !== emailDomain) {
+      return res.status(400).json({ error: "COLLEGE_EMAIL_REQUIRED", message: `Use an @${emailDomain || 'college'} email address` });
+    }
+
+    const password = String(req.body.password || "");
+    if (password) {
+      const problem = passwordProblem(password);
+      if (problem) return res.status(400).json({ error: "WEAK_PASSWORD", message: problem });
+    }
+    const barcode = String(req.body.barcode || "").trim();
+    if (barcode && (barcode.length < 4 || barcode.length > 128)) {
+      return res.status(400).json({ error: "INVALID_BARCODE", message: "Barcode must contain 4 to 128 characters" });
+    }
+
+    const details = role === "student"
+      ? { branchId: req.body.branchId, semesterId: req.body.semesterId, sectionId: req.body.sectionId }
+      : { branchId: req.body.branchId || null };
+    if (!await registrationAssignmentIsValid(db, req.user.organization_id, role, details)) {
+      return res.status(400).json({ error: "INVALID_ACADEMIC_ASSIGNMENT", message: "The selected academic assignment is invalid" });
+    }
+
+    const created = await db.transaction(async (client) => {
+      const identifier = role === "student" ? cleanRoll(req.body.rollNumber) : cleanUsername(req.body.employeeCode);
+      const inserted = await client.query(
+        `INSERT INTO users(organization_id,email,username,full_name,role,status,password_hash,password_set_at)
+         VALUES($1,$2,$3,$4,$5,'active',$6,CASE WHEN $6::text IS NULL THEN NULL ELSE now() END)
+         RETURNING id,organization_id,email,username,full_name,role,status,created_at`,
+        [req.user.organization_id, email, identifier, String(req.body.fullName).trim(), role, password ? hashPassword(password) : null]
+      );
+      const user = inserted.rows[0];
+      if (role === "student") {
+        await client.query(
+          "INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,phone) VALUES($1,$2,$3,$4,$5,$6)",
+          [user.id, cleanRoll(req.body.rollNumber), req.body.branchId, req.body.semesterId, req.body.sectionId, req.body.phone || null]
+        );
+        if (barcode) {
+          await client.query(
+            "INSERT INTO barcode_registrations(student_id,barcode_hash,barcode_last_four,status,registered_by) VALUES($1,$2,$3,'active',$4)",
+            [user.id, keyedHash(barcodePepper, `${req.user.organization_id}:${barcode}`), barcode.slice(-4), req.user.id]
+          );
+        }
+      } else {
+        await client.query(
+          "INSERT INTO teachers(user_id,employee_code,branch_id,phone) VALUES($1,$2,$3,$4)",
+          [user.id, String(req.body.employeeCode).trim(), req.body.branchId || null, req.body.phone || null]
+        );
+      }
+      await audit(client, req, "USER_CREATED", "user", user.id, null, { email: user.email, role: user.role, username: user.username });
+      return user;
+    });
+    res.status(201).json({ user: created, loginIdentifier: created.username });
+  }));
+
+  app.post("/api/admin/users/:id/reset-password", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const problem = passwordProblem(req.body.password);
+    if (problem) return res.status(400).json({ error: "WEAK_PASSWORD", message: problem });
+    const updated = await db.transaction(async (client) => {
+      const found = await client.query(
+        "SELECT id,email,full_name,role FROM users WHERE id=$1 AND organization_id=$2 AND role IN ('teacher','student') FOR UPDATE",
+        [req.params.id, req.user.organization_id]
+      );
+      if (!found.rowCount) throw Object.assign(new Error("User not found"), { status: 404, code: "USER_NOT_FOUND" });
+      await client.query("UPDATE users SET password_hash=$1,password_set_at=now(),updated_at=now() WHERE id=$2", [hashPassword(req.body.password), req.params.id]);
+      await client.query("UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [req.params.id]);
+      await audit(client, req, "PASSWORD_RESET_BY_ADMIN", "user", req.params.id, null, { role: found.rows[0].role });
+      return found.rows[0];
+    });
+    res.json({ message: `Password reset for ${updated.full_name}` });
+  }));
+
   app.patch("/api/admin/users/:id/status", authenticate, roles("admin"), asyncRoute(async (req, res) => {
     const status = req.body.status;
     if (!["active", "suspended"].includes(status)) return res.status(400).json({ error: "INVALID_USER_STATUS" });
@@ -624,7 +716,8 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   app.get("/api/admin/offerings", authenticate, roles("admin"), asyncRoute(async (req, res) => {
     const result = await db.query(
       `SELECT o.id,o.default_room,o.active,su.name AS subject,su.code AS subject_code,u.full_name AS teacher,
-       b.name AS branch,sc.name AS section,se.number AS semester
+       b.name AS branch,sc.name AS section,se.number AS semester,
+       (SELECT count(*)::int FROM student_enrollments e WHERE e.offering_id=o.id) AS enrolled_students
        FROM course_offerings o JOIN subjects su ON su.id=o.subject_id JOIN users u ON u.id=o.teacher_id
        JOIN sections sc ON sc.id=o.section_id JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=o.semester_id
        WHERE o.organization_id=$1 ORDER BY se.number,b.name,sc.name,su.name`, [req.user.organization_id]
@@ -663,6 +756,28 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
        ON CONFLICT DO NOTHING RETURNING *`, [req.body.offeringId, req.body.studentId, req.user.organization_id]
     );
     res.status(result.rowCount ? 201 : 200).json({ enrolled: true, alreadyEnrolled: !result.rowCount });
+  }));
+
+  app.get("/api/admin/enrollments", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    if (!req.query.offeringId) return res.status(400).json({ error: "OFFERING_REQUIRED", message: "Choose a course" });
+    const result = await db.query(
+      `SELECT u.id,u.full_name,u.email,s.roll_number,e.enrolled_at
+       FROM student_enrollments e JOIN course_offerings o ON o.id=e.offering_id
+       JOIN students s ON s.user_id=e.student_id JOIN users u ON u.id=s.user_id
+       WHERE e.offering_id=$1 AND o.organization_id=$2 ORDER BY s.roll_number`,
+      [req.query.offeringId, req.user.organization_id]
+    );
+    res.json(result.rows);
+  }));
+
+  app.delete("/api/admin/enrollments/:offeringId/:studentId", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const result = await db.query(
+      `DELETE FROM student_enrollments e USING course_offerings o
+       WHERE e.offering_id=$1 AND e.student_id=$2 AND o.id=e.offering_id AND o.organization_id=$3 RETURNING e.student_id`,
+      [req.params.offeringId, req.params.studentId, req.user.organization_id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "ENROLLMENT_NOT_FOUND", message: "Student is not enrolled in this course" });
+    res.status(204).end();
   }));
 
   app.get("/api/admin/timetable", authenticate, roles("admin"), asyncRoute(async (req, res) => {
@@ -1339,9 +1454,9 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
         if (!section.rowCount) throw new Error(`No section matches ${row.branch_code}/sem ${row.semester}/${row.section_name}`);
         await db.transaction(async (client) => {
           const user = await client.query(
-            `INSERT INTO users(organization_id,email,full_name,role,status) VALUES($1,$2,$3,'student','active')
+            `INSERT INTO users(organization_id,email,username,full_name,role,status) VALUES($1,$2,$3,$4,'student','active')
              ON CONFLICT (organization_id,email) DO NOTHING RETURNING id`,
-            [req.user.organization_id, email, fullName]
+            [req.user.organization_id, email, rollNumber, fullName]
           );
           if (!user.rowCount) { outcome.skipped += 1; return; }
           await client.query(
@@ -1354,6 +1469,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
               [user.rows[0].id, keyedHash(barcodePepper, `${req.user.organization_id}:${String(row.barcode).trim()}`), String(row.barcode).trim().slice(-4), req.user.id]
             );
           }
+          await audit(client, req, "STUDENT_IMPORTED", "user", user.rows[0].id, null, { email, rollNumber });
           outcome.created += 1;
         });
       } catch (error) {
