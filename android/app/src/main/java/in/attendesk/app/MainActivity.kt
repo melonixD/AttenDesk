@@ -24,7 +24,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.text.InputType
-import com.google.android.gms.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
