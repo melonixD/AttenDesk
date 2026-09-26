@@ -55,9 +55,68 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    private fun showLogin(emailValue: String = "", codeSent: Boolean = false, developmentOtp: String? = null) {
+    private fun showLogin(fullNameValue: String = "", rollNumberValue: String = "") {
         ble.stopStudentScan()
         resolvedTokens.clear()
+        val fullName = EditText(this).apply {
+            hint = "As registered by your college"
+            setText(fullNameValue)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PERSON_NAME
+            setPadding(dp(14), dp(4), dp(14), dp(4))
+            background = shape(Color.WHITE, 12, LINE)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54))
+        }
+        val rollNumber = EditText(this).apply {
+            hint = "College roll number"
+            setText(rollNumberValue)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            setPadding(dp(14), dp(4), dp(14), dp(4))
+            background = shape(Color.WHITE, 12, LINE)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54))
+        }
+        val password = EditText(this).apply {
+            hint = "Your assigned password"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setPadding(dp(14), dp(4), dp(14), dp(4))
+            background = shape(Color.WHITE, 12, LINE)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54))
+        }
+        val content = column(14).apply {
+            setPadding(dp(22), dp(36), dp(22), dp(30))
+            addView(label("ATTENDESK · STUDENT", 11, GREEN_DARK, true))
+            addView(label("Sign in to your attendance", 30, INK, true))
+            addView(label("Enter the credentials assigned by your college. Attendance can only be marked from your approved phone after detecting the classroom ESP32.", 14, MUTED))
+            addView(label("FULL NAME", 10, MUTED, true).withMargins(top = 16))
+            addView(fullName)
+            addView(label("ROLL NUMBER", 10, MUTED, true).withMargins(top = 8))
+            addView(rollNumber)
+            addView(label("PASSWORD", 10, MUTED, true).withMargins(top = 8))
+            addView(password)
+            addView(primaryButton("Sign in") {
+                passwordLogin(fullName.text.toString(), rollNumber.text.toString(), password.text.toString())
+            }.withMargins(top = 8))
+            addView(smallButton("Use college email code instead", false) { _ -> showOtpLogin() }.apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
+            })
+            addView(label("New student? Register on the AttenDesk website, then wait for administrator approval.", 11, MUTED).withMargins(top = 12))
+        }
+        setAnimatedContent(scroll(content))
+    }
+
+    private fun passwordLogin(fullName: String, rollNumber: String, password: String) {
+        if (fullName.isBlank()) return toast("Enter your registered full name")
+        if (rollNumber.isBlank()) return toast("Enter your roll number")
+        if (password.isBlank()) return toast("Enter your password")
+        showLoading("Verifying your account and device…")
+        io.execute {
+            runCatching {
+                api.studentPasswordLogin(fullName.trim(), rollNumber.trim(), password, installationId, deviceName)
+            }.onSuccess { login -> completeStudentLogin(login) }
+                .onFailure { error -> handleLoginFailure(error) { showLogin(fullName.trim(), rollNumber.trim()) } }
+        }
+    }
+
+    private fun showOtpLogin(emailValue: String = "", codeSent: Boolean = false, developmentOtp: String? = null) {
         val email = EditText(this).apply {
             hint = "name@college.edu"
             setText(emailValue)
@@ -76,9 +135,9 @@ class MainActivity : Activity() {
         }
         val content = column(14).apply {
             setPadding(dp(22), dp(36), dp(22), dp(30))
-            addView(label("ATTENDESK · STUDENT", 11, GREEN_DARK, true))
-            addView(label("Sign in to your attendance", 30, INK, true))
-            addView(label("Use your college email. Attendance can only be marked from your approved phone after detecting the classroom ESP32.", 14, MUTED))
+            addView(label("ATTENDESK · EMAIL CODE", 11, GREEN_DARK, true))
+            addView(label("Sign in with college email", 30, INK, true))
+            addView(label("Use this option when your college has enabled OTP email delivery.", 14, MUTED))
             addView(label("COLLEGE EMAIL", 10, MUTED, true).withMargins(top = 16))
             addView(email)
             if (codeSent) {
@@ -89,7 +148,9 @@ class MainActivity : Activity() {
             } else {
                 addView(primaryButton("Email me a code") { requestLoginCode(email.text.toString()) }.withMargins(top = 8))
             }
-            addView(label("New student? Register on the AttenDesk website, then wait for administrator approval.", 11, MUTED).withMargins(top = 12))
+            addView(smallButton("Back to password login", false) { _ -> showLogin() }.apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
+            })
         }
         setAnimatedContent(scroll(content))
     }
@@ -99,7 +160,7 @@ class MainActivity : Activity() {
         showLoading("Sending your secure login code…")
         io.execute {
             runCatching { api.requestOtp(email.trim().lowercase()) }
-                .onSuccess { otp -> main.post { showLogin(email.trim().lowercase(), true, otp) } }
+                .onSuccess { otp -> main.post { showOtpLogin(email.trim().lowercase(), true, otp) } }
                 .onFailure { error -> main.post { showNetworkError(error) } }
         }
     }
@@ -109,36 +170,46 @@ class MainActivity : Activity() {
         showLoading("Verifying your account and device…")
         io.execute {
             runCatching { api.verifyOtp(email.trim().lowercase(), code, installationId, deviceName) }
-                .onSuccess { login ->
-                    if (login.user.role != "student") {
-                        api.setSession(null, null)
-                        main.post { showError("Student account required", "The Android app is for students only. Teachers take attendance from the Attendesk website.") }
-                        return@onSuccess
-                    }
-                    signedInUser = login.user
-                    main.post { showStudentLoading() }
-                }
-                .onFailure { error -> main.post {
-                    if (error is ApiException && error.code == "DEVICE_CHANGE_REQUIRED" && error.deviceChangeToken != null) {
-                        showDeviceChangeDialog(email.trim().lowercase(), error.deviceChangeToken)
-                    } else showNetworkError(error)
-                } }
+                .onSuccess { login -> completeStudentLogin(login) }
+                .onFailure { error -> handleLoginFailure(error) { showOtpLogin(email.trim().lowercase()) } }
         }
     }
 
-    private fun showDeviceChangeDialog(email: String, verificationToken: String) {
+    private fun completeStudentLogin(login: LoginResult) {
+        if (login.user.role != "student") {
+            api.setSession(null, null)
+            main.post { showError("Student account required", "The Android app is for students only. Teachers take attendance from the Attendesk website.") }
+            return
+        }
+        signedInUser = login.user
+        main.post { showStudentLoading() }
+    }
+
+    private fun handleLoginFailure(error: Throwable, returnToLogin: () -> Unit) {
+        main.post {
+            if (error is ApiException && error.code == "DEVICE_CHANGE_REQUIRED" && error.deviceChangeToken != null) {
+                showDeviceChangeDialog(error.deviceChangeToken, returnToLogin)
+            } else if (error is ApiException) {
+                showError("Could not sign in", error.message ?: error.code)
+            } else {
+                showNetworkError(error)
+            }
+        }
+    }
+
+    private fun showDeviceChangeDialog(verificationToken: String, returnToLogin: () -> Unit) {
         val reason = EditText(this).apply { hint = "Why are you changing phones?"; setPadding(dp(14), dp(10), dp(14), dp(10)) }
         AlertDialog.Builder(this)
             .setTitle("New phone detected")
             .setMessage("Your account is linked to another phone. Ask an administrator to approve this device: $deviceName")
             .setView(reason)
-            .setNegativeButton("Cancel") { _, _ -> showLogin(emailValue = email) }
+            .setNegativeButton("Cancel") { _, _ -> returnToLogin() }
             .setPositiveButton("Request approval") { _, _ ->
                 val explanation = reason.text.toString().trim().ifBlank { "Phone replaced or reset" }
                 showLoading("Sending device approval request…")
                 io.execute {
-                    runCatching { api.requestDeviceChange(email, installationId, deviceName, explanation, verificationToken) }
-                        .onSuccess { main.post { showSuccess("Request sent", "An administrator must approve this phone before you can mark attendance.") { showLogin(emailValue = email) } } }
+                    runCatching { api.requestDeviceChange(installationId, deviceName, explanation, verificationToken) }
+                        .onSuccess { main.post { showSuccess("Request sent", "An administrator must approve this phone before you can mark attendance.", returnToLogin) } }
                         .onFailure { error -> main.post { showNetworkError(error) } }
                 }
             }.show()

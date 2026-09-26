@@ -18,7 +18,9 @@ const state = {
   webBleNearby: null,
   loginMode: 'student',
   liveSession: null,
-  rosterFilter: ''
+  rosterFilter: '',
+  reportFilters: {},
+  correctionFilters: {}
 };
 let livePollTimer = null;
 let refreshInFlight = null;
@@ -69,7 +71,7 @@ async function api(path, options = {}, retried = false) {
   const response = await fetch(path, { ...options, headers, body: options.body && typeof options.body !== 'string' ? JSON.stringify(options.body) : options.body });
   if (response.status === 204) return null;
   const contentType = response.headers.get('content-type') || '';
-  if (!contentType.includes('application/json') && !/\.(xlsx|pdf)$/.test(path)) {
+  if (!contentType.includes('application/json') && !/\.(xlsx|pdf)(?:\?|$)/.test(path)) {
     throw new Error('The API did not return JSON. Check Vercel routing, server configuration and deployment logs.');
   }
   const payload = contentType.includes('application/json') ? await response.json() : await response.blob();
@@ -565,7 +567,7 @@ $('#registration-otp-form').addEventListener('submit', async event => {
 
 const navByRole = {
   admin: [
-    ['overview', 'home', 'Overview'], ['registrations', 'check', 'Approvals'], ['people', 'users', 'People'], ['academic', 'building', 'Academic setup'], ['courses', 'book', 'Courses'], ['timetable', 'calendar', 'Timetable'], ['classrooms', 'building', 'Rooms & beacons'], ['devices', 'phone', 'Device requests'], ['reports', 'chart', 'Reports'], ['security', 'shield', 'Security & backups']
+    ['overview', 'home', 'Overview'], ['registrations', 'check', 'Approvals'], ['people', 'users', 'People'], ['academic', 'building', 'Academic setup'], ['courses', 'book', 'Courses'], ['timetable', 'calendar', 'Timetable'], ['bulk-import', 'file', 'Bulk import'], ['corrections', 'check', 'Corrections'], ['classrooms', 'building', 'Rooms & beacons'], ['devices', 'phone', 'Device requests'], ['reports', 'chart', 'Reports'], ['security', 'shield', 'Security & backups']
   ],
   teacher: [['overview', 'home', 'Overview'], ['classes', 'book', 'Take attendance'], ['reports', 'chart', 'Attendance reports']],
   student: [['overview', 'chart', 'My attendance']]
@@ -634,6 +636,8 @@ async function renderAdminPage(page) {
   if (page === 'academic') return renderAcademic();
   if (page === 'courses') return renderCourses();
   if (page === 'timetable') return renderTimetable();
+  if (page === 'bulk-import') return renderBulkImport();
+  if (page === 'corrections') return renderCorrections();
   if (page === 'classrooms') return renderClassrooms();
   if (page === 'devices') return renderDevices();
   if (page === 'reports') return renderReports();
@@ -684,7 +688,7 @@ async function renderRegistrations() {
 async function renderPeople() {
   heading('Directory', 'People and credentials');
   const rows = await api(`/api/admin/people?role=${state.peopleRole}`);
-  $('#page-content').innerHTML = `<div class="tab-row"><button class="tab ${state.peopleRole === 'student' ? 'active' : ''}" data-people-role="student">Students</button><button class="tab ${state.peopleRole === 'teacher' ? 'active' : ''}" data-people-role="teacher">Teachers</button></div><article class="panel"><div class="panel-header"><div><span class="eyebrow">Approved accounts</span><h2>${titleCase(state.peopleRole)} directory</h2></div><div class="panel-actions">${state.peopleRole === 'student' ? '<button class="secondary compact" data-import-students>Import CSV</button>' : ''}<button class="primary compact" data-add-person="${state.peopleRole}">Add ${state.peopleRole}</button><span class="pill">${rows.length} records</span></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Person</th><th>Identifier</th><th>Academic assignment</th><th>${state.peopleRole === 'student' ? 'ID and device' : 'Status'}</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><td><div class="person"><span class="person-avatar">${escapeHtml(row.full_name[0])}</span><div><strong>${escapeHtml(row.full_name)}</strong><br /><small>${escapeHtml(row.email)}</small></div></div></td><td>${escapeHtml(row.roll_number || row.employee_code)}</td><td>${escapeHtml([row.branch, row.semester && `Sem ${row.semester}`, row.section && `Section ${row.section}`].filter(Boolean).join(' · ') || '—')}</td><td>${state.peopleRole === 'student' ? `${row.barcode_status ? `Barcode ••••${escapeHtml(row.barcode_last_four)}` : '<span class="warning-text">No barcode</span>'}<br /><small>${escapeHtml(row.device_name || 'No device')} · ${titleCase(row.status)}</small>` : titleCase(row.status)}</td><td>${state.peopleRole === 'student' ? `<button class="table-action" data-register-barcode="${row.id}" data-student-name="${escapeHtml(row.full_name)}">Barcode</button> ` : ''}<button class="table-action" data-reset-user-password="${row.id}" data-user-name="${escapeHtml(row.full_name)}">Password</button> <button class="table-action ${row.status==='active'?'danger':''}" data-user-status="${row.id}" data-current-status="${row.status}">${row.status==='active'?'Suspend':'Reactivate'}</button></td></tr>`).join('') || emptyTableRow(`No ${state.peopleRole}s yet. Use the Add ${state.peopleRole} button to create one.`, 5)}</tbody></table></div></article>`;
+  $('#page-content').innerHTML = `<div class="tab-row"><button class="tab ${state.peopleRole === 'student' ? 'active' : ''}" data-people-role="student">Students</button><button class="tab ${state.peopleRole === 'teacher' ? 'active' : ''}" data-people-role="teacher">Teachers</button></div><article class="panel"><div class="panel-header"><div><span class="eyebrow">Approved accounts</span><h2>${titleCase(state.peopleRole)} directory</h2></div><div class="panel-actions"><button class="secondary compact" data-open-import="${state.peopleRole}s">Import CSV</button><button class="primary compact" data-add-person="${state.peopleRole}">Add ${state.peopleRole}</button><span class="pill">${rows.length} records</span></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Person</th><th>Identifier</th><th>Academic assignment</th><th>${state.peopleRole === 'student' ? 'ID and device' : 'Status'}</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><td><div class="person"><span class="person-avatar">${escapeHtml(row.full_name[0])}</span><div><strong>${escapeHtml(row.full_name)}</strong><br /><small>${escapeHtml(row.email)}</small></div></div></td><td>${escapeHtml(row.roll_number || row.employee_code)}</td><td>${escapeHtml([row.branch, row.semester && `Sem ${row.semester}`, row.section && `Section ${row.section}`].filter(Boolean).join(' · ') || '—')}</td><td>${state.peopleRole === 'student' ? `${row.barcode_status ? `Barcode ••••${escapeHtml(row.barcode_last_four)}` : '<span class="warning-text">No barcode</span>'}<br /><small>${escapeHtml(row.device_name || 'No device')} · ${titleCase(row.status)}</small>` : titleCase(row.status)}</td><td>${state.peopleRole === 'student' ? `<button class="table-action" data-register-barcode="${row.id}" data-student-name="${escapeHtml(row.full_name)}">Barcode</button> ` : ''}<button class="table-action" data-reset-user-password="${row.id}" data-user-name="${escapeHtml(row.full_name)}">Password</button> <button class="table-action ${row.status==='active'?'danger':''}" data-user-status="${row.id}" data-current-status="${row.status}">${row.status==='active'?'Suspend':'Reactivate'}</button></td></tr>`).join('') || emptyTableRow(`No ${state.peopleRole}s yet. Use the Add ${state.peopleRole} button to create one.`, 5)}</tbody></table></div></article>`;
 }
 
 async function renderAcademic() {
@@ -693,7 +697,7 @@ async function renderAcademic() {
   const rows = entity === 'sections' ? await api('/api/admin/sections') : await api(`/api/admin/academic/${entity}`);
   const catalogs = await Promise.all([api('/api/admin/academic/branches'), api('/api/admin/academic/semesters')]);
   const form = academicForm(entity, catalogs[0], catalogs[1]);
-  $('#page-content').innerHTML = `<div class="tab-row">${['branches','semesters','subjects','sections'].map(item => `<button class="tab ${item === entity ? 'active' : ''}" data-academic="${item}">${titleCase(item)}</button>`).join('')}</div><article class="panel"><div class="panel-header"><div><span class="eyebrow">Create and manage</span><h2>${titleCase(entity)}</h2></div><span class="pill">${rows.length} configured</span></div>${form}</article><article class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Code / period</th><th>Assignment</th><th>Status</th><th>Manage</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.name || `Semester ${row.number}`)}</strong></td><td>${escapeHtml(row.code || (row.academic_year ? `${row.academic_year} · ${row.term}` : '—'))}</td><td>${escapeHtml([row.branch_name, row.semester_number && `Semester ${row.semester_number}`].filter(Boolean).join(' · ') || '—')}</td><td><span class="pill">${row.active === false ? 'Inactive' : 'Active'}</span></td><td><button class="table-action" data-toggle-academic="${row.id}" data-entity="${entity}" data-active="${row.active !== false}">${row.active === false ? 'Activate' : 'Deactivate'}</button></td></tr>`).join('')}</tbody></table></div></article>`;
+  $('#page-content').innerHTML = `<div class="tab-row">${['branches','semesters','subjects','sections'].map(item => `<button class="tab ${item === entity ? 'active' : ''}" data-academic="${item}">${titleCase(item)}</button>`).join('')}</div><article class="panel"><div class="panel-header"><div><span class="eyebrow">Create and manage</span><h2>${titleCase(entity)}</h2></div><div class="panel-actions">${entity === 'subjects' ? '<button class="secondary compact" data-open-import="subjects">Import subjects</button>' : ''}<span class="pill">${rows.length} configured</span></div></div>${form}</article><article class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Code / period</th><th>Assignment</th><th>Status</th><th>Manage</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.name || `Semester ${row.number}`)}</strong></td><td>${escapeHtml(row.code || (row.academic_year ? `${row.academic_year} · ${row.term}` : '—'))}</td><td>${escapeHtml([row.branch_name, row.semester_number && `Semester ${row.semester_number}`].filter(Boolean).join(' · ') || '—')}</td><td><span class="pill">${row.active === false ? 'Inactive' : 'Active'}</span></td><td><button class="table-action" data-edit-academic="${row.id}" data-entity="${entity}">Edit</button> <button class="table-action" data-toggle-academic="${row.id}" data-entity="${entity}" data-active="${row.active !== false}">${row.active === false ? 'Activate' : 'Deactivate'}</button></td></tr>`).join('') || emptyTableRow(`No ${entity} configured yet.`, 5)}</tbody></table></div></article>`;
 }
 
 function academicForm(entity, branches, semesters) {
@@ -712,13 +716,36 @@ async function renderCourses() {
   const courseOptions = offerings.map(row => `<option value="${row.id}">${escapeHtml(row.subject)} · ${escapeHtml(row.branch)} ${escapeHtml(row.section)}</option>`).join('');
   const canCreateCourse = subjects.some(row => row.active) && teachers.length && sections.some(row => row.active) && semesters.some(row => row.active);
   const canEnroll = offerings.length && students.length;
-  $('#page-content').innerHTML = `<section class="split"><article class="panel"><div class="panel-header"><div><span class="eyebrow">New course</span><h2>Assign a subject</h2></div></div>${canCreateCourse ? `<form class="compact-form" data-create-offering><label>Subject<select name="subjectId">${subjects.filter(row=>row.active).map(row=>`<option value="${row.id}">${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Teacher<select name="teacherId">${teachers.map(row=>`<option value="${row.id}">${escapeHtml(row.full_name)}</option>`).join('')}</select></label><label>Section<select name="sectionId">${sections.filter(row=>row.active).map(row=>`<option value="${row.id}">${escapeHtml(row.branch_code)} · Sem ${row.semester_number} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Semester<select name="semesterId">${semesters.filter(row=>row.active).map(row=>`<option value="${row.id}">Semester ${row.number} · ${escapeHtml(row.academic_year)}</option>`).join('')}</select></label><label>Default room<input name="defaultRoom" placeholder="210" required /></label><button class="primary">Create course</button></form>` : `<div class="dependency-note"><strong>Complete the prerequisites first.</strong><p>You need an active subject, teacher, semester and section before creating a course.</p><button class="table-action" data-page="academic">Open academic setup</button> <button class="table-action" data-page="people" data-setup-people="teacher">Add teacher</button></div>`}</article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Roster</span><h2>Enroll a student</h2></div></div>${canEnroll ? `<form class="compact-form" data-enroll-student><label>Course<select name="offeringId">${courseOptions}</select></label><label>Student<select name="studentId">${students.map(row=>`<option value="${row.id}">${escapeHtml(row.roll_number)} · ${escapeHtml(row.full_name)}</option>`).join('')}</select></label><button class="primary">Add to roster</button></form>` : `<div class="dependency-note"><strong>${offerings.length ? 'Create or import students.' : 'Create a course first.'}</strong><p>Students can be enrolled after both the course and student account exist.</p><button class="table-action" data-page="people" data-setup-people="student">Open students</button></div>`}</article></section><article class="panel"><div class="panel-header"><div><span class="eyebrow">Current semester</span><h2>Course offerings</h2></div><span class="pill">${offerings.length} courses</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Subject</th><th>Teacher</th><th>Class</th><th>Semester</th><th>Room</th><th>Roster</th></tr></thead><tbody>${offerings.map(row=>`<tr><td><strong>${escapeHtml(row.subject)}</strong><br/><small>${escapeHtml(row.subject_code)}</small></td><td>${escapeHtml(row.teacher)}</td><td>${escapeHtml(row.branch)} · Section ${escapeHtml(row.section)}</td><td>${row.semester}</td><td>${escapeHtml(row.default_room)}</td><td><button class="table-action" data-view-roster="${row.id}" data-course-name="${escapeHtml(row.subject)}">${row.enrolled_students || 0} students</button></td></tr>`).join('') || emptyTableRow('No courses yet. Complete the setup cards above.', 6)}</tbody></table></div></article>`;
+  $('#page-content').innerHTML = `<section class="split"><article class="panel"><div class="panel-header"><div><span class="eyebrow">New course</span><h2>Assign a subject</h2></div></div>${canCreateCourse ? `<form class="compact-form" data-create-offering><label>Subject<select name="subjectId">${subjects.filter(row=>row.active).map(row=>`<option value="${row.id}">${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Teacher<select name="teacherId">${teachers.map(row=>`<option value="${row.id}">${escapeHtml(row.full_name)}</option>`).join('')}</select></label><label>Section<select name="sectionId">${sections.filter(row=>row.active).map(row=>`<option value="${row.id}">${escapeHtml(row.branch_code)} · Sem ${row.semester_number} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Semester<select name="semesterId">${semesters.filter(row=>row.active).map(row=>`<option value="${row.id}">Semester ${row.number} · ${escapeHtml(row.academic_year)}</option>`).join('')}</select></label><label>Default room<input name="defaultRoom" placeholder="210" required /></label><button class="primary">Create course</button></form>` : `<div class="dependency-note"><strong>Complete the prerequisites first.</strong><p>You need an active subject, teacher, semester and section before creating a course.</p><button class="table-action" data-page="academic">Open academic setup</button> <button class="table-action" data-page="people" data-setup-people="teacher">Add teacher</button></div>`}</article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Roster</span><h2>Enroll a student</h2></div></div>${canEnroll ? `<form class="compact-form" data-enroll-student><label>Course<select name="offeringId">${courseOptions}</select></label><label>Student<select name="studentId">${students.map(row=>`<option value="${row.id}">${escapeHtml(row.roll_number)} · ${escapeHtml(row.full_name)}</option>`).join('')}</select></label><button class="primary">Add to roster</button></form>` : `<div class="dependency-note"><strong>${offerings.length ? 'Create or import students.' : 'Create a course first.'}</strong><p>Students can be enrolled after both the course and student account exist.</p><button class="table-action" data-page="people" data-setup-people="student">Open students</button></div>`}</article></section><article class="panel"><div class="panel-header"><div><span class="eyebrow">Current semester</span><h2>Course offerings</h2></div><div class="panel-actions"><button class="secondary compact" data-open-import="courses">Import courses</button><button class="secondary compact" data-open-import="enrollments">Import enrollments</button><span class="pill">${offerings.length} courses</span></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Subject</th><th>Teacher</th><th>Class</th><th>Semester</th><th>Room</th><th>Manage</th></tr></thead><tbody>${offerings.map(row=>`<tr><td><strong>${escapeHtml(row.subject)}</strong><br/><small>${escapeHtml(row.subject_code)}</small></td><td>${escapeHtml(row.teacher)}</td><td>${escapeHtml(row.branch)} · Section ${escapeHtml(row.section)}</td><td>${row.semester}</td><td>${escapeHtml(row.default_room)}</td><td><button class="table-action" data-view-roster="${row.id}" data-course-name="${escapeHtml(row.subject)}">${row.enrolled_students || 0} students</button> <button class="table-action" data-edit-offering="${row.id}">Edit</button></td></tr>`).join('') || emptyTableRow('No courses yet. Complete the setup cards above.', 6)}</tbody></table></div></article>`;
 }
 
 async function renderTimetable() {
   heading('Scheduling', 'Timetable management');
   const [entries, offerings] = await Promise.all([api('/api/admin/timetable'), api('/api/admin/offerings')]);
-  $('#page-content').innerHTML = `<article class="panel"><div class="panel-header"><div><span class="eyebrow">New class period</span><h2>Add timetable entry</h2></div></div><form class="compact-form" id="timetable-form"><label>Class<select name="offeringId">${offerings.map(row => `<option value="${row.id}">${escapeHtml(row.subject)} · ${escapeHtml(row.branch)} ${escapeHtml(row.section)}</option>`).join('')}</select></label><label>Day<select name="dayOfWeek">${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map((day,index)=>`<option value="${index+1}">${day}</option>`).join('')}</select></label><label>Room<input name="room" required /></label><label>Starts<input name="startsAt" type="time" required /></label><label>Ends<input name="endsAt" type="time" required /></label><label>Valid from<input name="validFrom" type="date" required /></label><label>Valid until<input name="validUntil" type="date" required /></label><button class="primary">Add period</button></form></article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Weekly plan</span><h2>Configured periods</h2></div><span class="pill">${entries.length} entries</span></div>${entries.map(row=>`<div class="schedule-row timetable-row"><span class="day">${['','Mon','Tue','Wed','Thu','Fri','Sat','Sun'][row.day_of_week]}</span><strong>${escapeHtml(row.subject)}</strong><span>${escapeHtml(row.branch)} · ${escapeHtml(row.section)}</span><span>${String(row.starts_at).slice(0,5)}</span><button class="table-action danger" data-delete-period="${row.id}">Remove</button></div>`).join('') || '<div class="empty">No timetable entries yet.</div>'}</article>`;
+  $('#page-content').innerHTML = `<article class="panel"><div class="panel-header"><div><span class="eyebrow">New class period</span><h2>Add timetable entry</h2></div><button class="secondary compact" data-open-import="timetables">Import timetable</button></div><form class="compact-form" id="timetable-form"><label>Class<select name="offeringId">${offerings.map(row => `<option value="${row.id}">${escapeHtml(row.subject)} · ${escapeHtml(row.branch)} ${escapeHtml(row.section)}</option>`).join('')}</select></label><label>Day<select name="dayOfWeek">${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map((day,index)=>`<option value="${index+1}">${day}</option>`).join('')}</select></label><label>Room<input name="room" required /></label><label>Starts<input name="startsAt" type="time" required /></label><label>Ends<input name="endsAt" type="time" required /></label><label>Valid from<input name="validFrom" type="date" required /></label><label>Valid until<input name="validUntil" type="date" required /></label><button class="primary">Add period</button></form></article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Weekly plan</span><h2>Configured periods</h2></div><span class="pill">${entries.length} entries</span></div>${entries.map(row=>`<div class="schedule-row timetable-row"><span class="day">${['','Mon','Tue','Wed','Thu','Fri','Sat','Sun'][row.day_of_week]}</span><strong>${escapeHtml(row.subject)}</strong><span>${escapeHtml(row.branch)} · ${escapeHtml(row.section)}</span><span>${String(row.starts_at).slice(0,5)}–${String(row.ends_at).slice(0,5)}</span><span><button class="table-action" data-edit-period="${row.id}">Edit</button> <button class="table-action danger" data-delete-period="${row.id}">Remove</button></span></div>`).join('') || '<div class="empty">No timetable entries yet.</div>'}</article>`;
+}
+
+async function renderBulkImport() {
+  heading('Administration', 'Bulk import centre');
+  const order = ['students', 'teachers', 'subjects', 'courses', 'enrollments', 'timetables'];
+  $('#page-content').innerHTML = `<article class="panel"><div class="panel-header"><div><span class="eyebrow">CSV onboarding</span><h2>Upload college data in the correct order</h2></div><span class="pill">Up to 1,000 rows per file</span></div><p class="modal-copy">Download a ready-made template, fill it in Excel or Google Sheets, save as CSV, then upload it here. Invalid rows are reported with their exact row number.</p><div class="import-grid">${order.map((key, index) => { const item = importDefinitions[key]; return `<button class="import-card" data-open-import="${key}"><span>${index + 1}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.description)}</small></div>${icon('arrow', 16)}</button>`; }).join('')}</div></article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Safe workflow</span><h2>Recommended import sequence</h2></div></div><div class="system-list"><div><span>${icon('building',16)}</span><div><strong>1. Academic structure</strong><small>Create branches, semesters and sections manually; then import subjects.</small></div></div><div><span>${icon('users',16)}</span><div><strong>2. People</strong><small>Import teachers and students before allocating courses.</small></div></div><div><span>${icon('calendar',16)}</span><div><strong>3. Allocation</strong><small>Import courses, enrollments, then timetable periods.</small></div></div></div></article>`;
+}
+
+function correctionQuery() {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(state.correctionFilters)) if (value) params.set(key, value);
+  return params.toString();
+}
+
+async function renderCorrections() {
+  heading('Attendance control', 'Corrections and appeals');
+  const query = correctionQuery();
+  const [sessions, appeals, branches, semesters, sections, subjects] = await Promise.all([
+    api(`/api/admin/attendance/sessions${query ? `?${query}` : ''}`), api('/api/admin/attendance/appeals?status=pending'),
+    api('/api/admin/academic/branches'), api('/api/admin/academic/semesters'), api('/api/admin/sections'), api('/api/admin/academic/subjects')
+  ]);
+  const selected = (key, value) => String(state.correctionFilters[key] || '') === String(value) ? 'selected' : '';
+  $('#page-content').innerHTML = `<article class="panel"><div class="panel-header"><div><span class="eyebrow">Find a completed class</span><h2>Post-session correction</h2></div><span class="pill warn">${appeals.length} pending appeals</span></div><form class="filter-form" id="correction-filter-form"><label>Branch<select name="branchId"><option value="">All branches</option>${branches.map(row=>`<option value="${row.id}" ${selected('branchId',row.id)}>${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Semester<select name="semesterId"><option value="">All semesters</option>${semesters.map(row=>`<option value="${row.id}" ${selected('semesterId',row.id)}>Semester ${row.number} · ${escapeHtml(row.academic_year)}</option>`).join('')}</select></label><label>Section<select name="sectionId"><option value="">All sections</option>${sections.map(row=>`<option value="${row.id}" ${selected('sectionId',row.id)}>${escapeHtml(row.branch_code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Subject<select name="subjectId"><option value="">All subjects</option>${subjects.map(row=>`<option value="${row.id}" ${selected('subjectId',row.id)}>${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>From<input name="from" type="date" value="${escapeHtml(state.correctionFilters.from || '')}" /></label><label>To<input name="to" type="date" value="${escapeHtml(state.correctionFilters.to || '')}" /></label><button class="primary compact">Apply filters</button><button class="secondary compact" type="button" data-clear-correction-filters>Clear</button></form></article><section class="split"><article class="panel"><div class="panel-header"><div><span class="eyebrow">Student requests</span><h2>Pending appeals</h2></div></div>${appeals.map(row=>`<div class="appeal-row"><div><strong>${escapeHtml(row.full_name)}</strong><small>${escapeHtml(row.roll_number)} · ${escapeHtml(row.subject_code)} · ${new Date(row.starts_at).toLocaleDateString()}</small><p>${escapeHtml(row.reason)}</p></div><div><span class="pill warn">${titleCase(row.current_status)} → ${titleCase(row.requested_status)}</span><button class="table-action" data-review-appeal="${row.id}" data-appeal-student="${escapeHtml(row.full_name)}" data-requested-status="${row.requested_status}">Review</button></div></div>`).join('') || '<div class="empty">No attendance appeals are waiting.</div>'}</article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Completed windows</span><h2>Sessions</h2></div><span class="pill">${sessions.length}</span></div>${sessions.map(row=>`<div class="appeal-row"><div><strong>${escapeHtml(row.subject)} · ${escapeHtml(row.branch)} ${escapeHtml(row.section)}</strong><small>${new Date(row.starts_at).toLocaleString()} · Room ${escapeHtml(row.room)} · ${escapeHtml(row.teacher)}</small></div><div><span>${row.present}/${row.recorded} present</span><button class="table-action" data-open-correction="${row.id}">Open roster</button></div></div>`).join('') || '<div class="empty">No completed sessions match these filters.</div>'}</article></section>`;
 }
 
 async function renderDevices() {
@@ -729,12 +756,24 @@ async function renderDevices() {
 
 async function renderReports() {
   heading('Attendance intelligence', 'Reports and defaulters');
-  const offerings = state.user.role === 'admin' ? await api('/api/admin/offerings') : await api('/api/teacher/classes');
-  $('#page-content').innerHTML = `<article class="panel"><div class="panel-header"><div><span class="eyebrow">Subject-wise records</span><h2>Download attendance</h2></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Subject</th><th>Class</th><th>Room</th><th>Exports</th></tr></thead><tbody>${offerings.map(row=>`<tr><td><strong>${escapeHtml(row.subject)}</strong><br/><small>${escapeHtml(row.code || row.subject_code)}</small></td><td>${escapeHtml(row.branch)} · Section ${escapeHtml(row.section)}</td><td>${escapeHtml(row.default_room)}</td><td><div class="report-actions"><button class="table-action" data-download-report="${row.id}" data-format="xlsx">Excel</button><button class="table-action" data-download-report="${row.id}" data-format="pdf">PDF</button><button class="table-action" data-view-report="${row.id}">View</button></div></td></tr>`).join('') || emptyTableRow('No course reports are available yet.', 4)}</tbody></table></div></article>`;
+  const admin = state.user.role === 'admin';
+  const [allOfferings, branches, semesters, sections, subjects] = await Promise.all([
+    admin ? api('/api/admin/offerings') : api('/api/teacher/classes'),
+    admin ? api('/api/admin/academic/branches') : [], admin ? api('/api/admin/academic/semesters') : [],
+    admin ? api('/api/admin/sections') : [], admin ? api('/api/admin/academic/subjects') : []
+  ]);
+  const f = state.reportFilters;
+  const offerings = allOfferings.filter(row => (!f.branchId || row.branch_id === f.branchId) && (!f.semesterId || row.semester_id === f.semesterId) && (!f.sectionId || row.section_id === f.sectionId) && (!f.subjectId || row.subject_id === f.subjectId));
+  const selected = (key, value) => String(f[key] || '') === String(value) ? 'selected' : '';
+  const adminFilters = admin ? `<label>Branch<select name="branchId"><option value="">All branches</option>${branches.map(row=>`<option value="${row.id}" ${selected('branchId',row.id)}>${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Semester<select name="semesterId"><option value="">All semesters</option>${semesters.map(row=>`<option value="${row.id}" ${selected('semesterId',row.id)}>Semester ${row.number}</option>`).join('')}</select></label><label>Section<select name="sectionId"><option value="">All sections</option>${sections.map(row=>`<option value="${row.id}" ${selected('sectionId',row.id)}>${escapeHtml(row.branch_code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Subject<select name="subjectId"><option value="">All subjects</option>${subjects.map(row=>`<option value="${row.id}" ${selected('subjectId',row.id)}>${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label>` : '';
+  $('#page-content').innerHTML = `<article class="panel"><div class="panel-header"><div><span class="eyebrow">Report scope</span><h2>Filter attendance data</h2></div></div><form class="filter-form" id="report-filter-form">${adminFilters}<label>From<input name="from" type="date" value="${escapeHtml(f.from || '')}" /></label><label>To<input name="to" type="date" value="${escapeHtml(f.to || '')}" /></label><button class="primary compact">Apply filters</button><button class="secondary compact" type="button" data-clear-report-filters>Clear</button></form></article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Subject-wise records</span><h2>Download attendance</h2></div><span class="pill">${offerings.length} courses</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Subject</th><th>Class</th><th>Room</th><th>Exports</th></tr></thead><tbody>${offerings.map(row=>`<tr><td><strong>${escapeHtml(row.subject)}</strong><br/><small>${escapeHtml(row.code || row.subject_code)}</small></td><td>${escapeHtml(row.branch)} · Section ${escapeHtml(row.section)}</td><td>${escapeHtml(row.default_room)}</td><td><div class="report-actions"><button class="table-action" data-download-report="${row.id}" data-format="xlsx">Excel</button><button class="table-action" data-download-report="${row.id}" data-format="pdf">PDF</button><button class="table-action" data-view-report="${row.id}">View</button></div></td></tr>`).join('') || emptyTableRow('No course reports match these filters.', 4)}</tbody></table></div></article>`;
 }
 
 async function renderReportDetail(id) {
-  const data = await api(`/api/reports/offerings/${id}`);
+  const params = new URLSearchParams();
+  if (state.reportFilters.from) params.set('from', state.reportFilters.from);
+  if (state.reportFilters.to) params.set('to', state.reportFilters.to);
+  const data = await api(`/api/reports/offerings/${id}${params.size ? `?${params}` : ''}`);
   openModal(`<span class="eyebrow">Below ${data.threshold}% highlighted</span><h2>${escapeHtml(data.offering.subject_name)}</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Student</th><th>Attended</th><th>Conducted</th><th>Percentage</th></tr></thead><tbody>${data.rows.map(row=>`<tr><td><strong>${escapeHtml(row.full_name)}</strong><br/><small>${escapeHtml(row.roll_number)}</small></td><td>${row.attended}</td><td>${row.conducted}</td><td class="${row.below_threshold?'warning-text':''}"><strong>${row.percentage}%</strong></td></tr>`).join('')}</tbody></table></div>`);
 }
 
@@ -1154,10 +1193,10 @@ async function markAttendanceFromWebsite() {
 
 async function renderStudentPage() {
   heading('Student dashboard', `${greeting()}, ${state.user.full_name.split(' ')[0]}.`);
-  const [data, history] = await Promise.all([api('/api/student/dashboard'), api('/api/student/history')]);
+  const [data, history, appeals] = await Promise.all([api('/api/student/dashboard'), api('/api/student/history'), api('/api/student/appeals')]);
   const overallStatus = data.conducted === 0 ? 'No classes yet' : data.overallPercentage >= data.threshold ? 'On track' : 'Action needed';
   const overallWarning = data.conducted > 0 && data.overallPercentage < data.threshold;
-  $('#page-content').innerHTML = `<section class="metrics">${metric(`${data.overallPercentage}%`,'Overall attendance',`${data.attended} of ${data.conducted} classes`,true)}${metric(data.subjects.length,'Subjects','Current enrollments')}${metric(data.subjects.filter(row=>row.belowThreshold).length,'Below threshold',`Required ${data.threshold}%`)}${metric('Web BLE','Marking access','Chrome on registered Android')}</section>${webBluetoothCardMarkup()}<article class="panel"><div class="panel-header"><div><span class="eyebrow">Subject-wise attendance</span><h2>Your complete record</h2></div><span class="pill ${overallWarning?'warn':''}">${overallStatus}</span></div>${data.subjects.map(row=>`<div class="schedule-row attendance-row"><span class="person-avatar">${escapeHtml(row.subject_code.slice(0,2))}</span><div><strong>${escapeHtml(row.subject)}</strong><div class="subject-progress"><i style="width:${Math.min(100,row.percentage)}%"></i></div></div><span>${row.attended} / ${row.conducted}</span><strong class="${row.belowThreshold?'warning-text':''}">${row.percentage}%</strong><span>${row.conducted===0?'Not started':row.belowThreshold?`Below ${data.threshold}%`:'On track'}</span></div>`).join('') || '<div class="empty">No subjects have been assigned yet.</div>'}</article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Attendance history</span><h2>Recent classes</h2></div><span class="pill">${history.length} records</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Subject</th><th>Teacher</th><th>Room</th><th>Status</th></tr></thead><tbody>${history.map(row=>`<tr><td>${escapeHtml(new Date(row.starts_at).toLocaleString())}</td><td><strong>${escapeHtml(row.subject)}</strong><br/><small>${escapeHtml(row.subject_code)}</small></td><td>${escapeHtml(row.teacher)}</td><td>${escapeHtml(row.room)}</td><td><span class="pill ${row.status==='absent'?'warn':''}">${titleCase(row.status)}</span></td></tr>`).join('') || emptyTableRow('No completed classes yet.', 5)}</tbody></table></div></article>`;
+  $('#page-content').innerHTML = `<section class="metrics">${metric(`${data.overallPercentage}%`,'Overall attendance',`${data.attended} of ${data.conducted} classes`,true)}${metric(data.subjects.length,'Subjects','Current enrollments')}${metric(data.subjects.filter(row=>row.belowThreshold).length,'Below threshold',`Required ${data.threshold}%`)}${metric('Android','Marking access','ESP32 classroom beacon')}</section>${webBluetoothCardMarkup()}<article class="panel"><div class="panel-header"><div><span class="eyebrow">Subject-wise attendance</span><h2>Your complete record</h2></div><span class="pill ${overallWarning?'warn':''}">${overallStatus}</span></div>${data.subjects.map(row=>`<div class="schedule-row attendance-row"><span class="person-avatar">${escapeHtml(row.subject_code.slice(0,2))}</span><div><strong>${escapeHtml(row.subject)}</strong><div class="subject-progress"><i style="width:${Math.min(100,row.percentage)}%"></i></div></div><span>${row.attended} / ${row.conducted}</span><strong class="${row.belowThreshold?'warning-text':''}">${row.percentage}%</strong><span>${row.conducted===0?'Not started':row.belowThreshold?`Below ${data.threshold}%`:'On track'}</span></div>`).join('') || '<div class="empty">No subjects have been assigned yet.</div>'}</article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Attendance history</span><h2>Recent classes</h2></div><span class="pill">${history.length} records</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Subject</th><th>Teacher</th><th>Status</th><th>Appeal</th></tr></thead><tbody>${history.map(row=>`<tr><td>${escapeHtml(new Date(row.starts_at).toLocaleString())}</td><td><strong>${escapeHtml(row.subject)}</strong><br/><small>${escapeHtml(row.subject_code)} · Room ${escapeHtml(row.room)}</small></td><td>${escapeHtml(row.teacher)}</td><td><span class="pill ${row.status==='absent'?'warn':''}">${titleCase(row.status)}</span>${row.correction_reason?`<br/><small>${escapeHtml(row.correction_reason)}</small>`:''}</td><td>${row.appeal_status?`<span class="pill ${row.appeal_status==='pending'?'warn':''}">${titleCase(row.appeal_status)}</span>`:row.attendance_record_id?`<button class="table-action" data-student-appeal="${row.attendance_record_id}" data-subject="${escapeHtml(row.subject)}">Request correction</button>`:'—'}</td></tr>`).join('') || emptyTableRow('No completed classes yet.', 5)}</tbody></table></div></article><article class="panel"><div class="panel-header"><div><span class="eyebrow">Correction history</span><h2>Your appeals</h2></div><span class="pill">${appeals.length}</span></div>${appeals.map(row=>`<div class="appeal-row"><div><strong>${escapeHtml(row.subject)}</strong><small>${new Date(row.starts_at).toLocaleString()} · ${titleCase(row.current_status)}</small><p>${escapeHtml(row.reason)}</p>${row.resolution_note?`<p><strong>Resolution:</strong> ${escapeHtml(row.resolution_note)}</p>`:''}</div><span class="pill ${row.status==='pending'?'warn':''}">${titleCase(row.status)}</span></div>`).join('') || '<div class="empty">You have not submitted any attendance appeals.</div>'}</article>`;
 }
 
 function openModal(html) { $('#modal-content').innerHTML = html; $('#modal').classList.remove('hidden'); }
@@ -1186,8 +1225,8 @@ async function openAddPersonDialog(role) {
   const domain = String(state.user.email || '').split('@')[1] || 'hbtu.ac.in';
   const roleFields = role === 'teacher'
     ? `<div class="field-grid"><label>Employee code<input name="employeeCode" required autocomplete="off" placeholder="FT-EMP-01" /></label><label>Branch<select name="branchId"><option value="">College-wide / optional</option>${activeBranches.map(row => `<option value="${row.id}">${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label></div><label>Initial password<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters with letters and numbers" /></label>`
-    : `<div class="field-grid"><label>Roll number<input name="rollNumber" required autocomplete="off" /></label><label>Class section<select name="sectionId" id="person-section" required>${activeSections.map(row => `<option value="${row.id}" data-branch-id="${row.branch_id}" data-semester-id="${row.semester_id}">${escapeHtml(row.branch_code)} · Semester ${row.semester_number} · Section ${escapeHtml(row.name)}</option>`).join('')}</select></label></div><div class="field-grid"><label>ID-card barcode<input name="barcode" minlength="4" autocomplete="off" placeholder="Optional now" /></label><label>Initial password<input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Recommended" /></label></div>`;
-  openModal(`<span class="eyebrow">Direct account creation</span><h2>Add ${escapeHtml(role)}</h2><form id="person-form"><input type="hidden" name="role" value="${role}" /><div class="field-grid"><label>Full name<input name="fullName" required autocomplete="name" /></label><label>College email<input name="email" type="email" required placeholder="name@${escapeHtml(domain)}" autocomplete="email" /></label></div><label>Phone number<input name="phone" inputmode="tel" autocomplete="tel" placeholder="Optional" /></label>${roleFields}<button class="primary" type="submit">Create ${escapeHtml(role)}</button><p class="field-note">${role === 'teacher' ? 'The employee code becomes the teacher username.' : 'The student signs in using this full name, roll number and password if one is assigned.'}</p></form>`);
+    : `<div class="field-grid"><label>Roll number<input name="rollNumber" required autocomplete="off" /></label><label>Class section<select name="sectionId" id="person-section" required>${activeSections.map(row => `<option value="${row.id}" data-branch-id="${row.branch_id}" data-semester-id="${row.semester_id}">${escapeHtml(row.branch_code)} · Semester ${row.semester_number} · Section ${escapeHtml(row.name)}</option>`).join('')}</select></label></div><div class="field-grid"><label>ID-card barcode<input name="barcode" minlength="4" autocomplete="off" placeholder="Optional now" /></label><label>Initial password<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters with letters and numbers" /></label></div>`;
+  openModal(`<span class="eyebrow">Direct account creation</span><h2>Add ${escapeHtml(role)}</h2><form id="person-form"><input type="hidden" name="role" value="${role}" /><div class="field-grid"><label>Full name<input name="fullName" required autocomplete="name" /></label><label>College email<input name="email" type="email" required placeholder="name@${escapeHtml(domain)}" autocomplete="email" /></label></div><label>Phone number<input name="phone" inputmode="tel" autocomplete="tel" placeholder="Optional" /></label>${roleFields}<button class="primary" type="submit">Create ${escapeHtml(role)}</button><p class="field-note">${role === 'teacher' ? 'The employee code becomes the teacher username.' : 'The student uses this full name, roll number and password in the Android app.'}</p></form>`);
   $('#person-form').addEventListener('submit', async formEvent => {
     formEvent.preventDefault();
     const button = formEvent.submitter;
@@ -1236,17 +1275,59 @@ function parseCsv(text) {
   return rows.map(columns => Object.fromEntries(headers.map((header, index) => [header, columns[index] || ''])));
 }
 
-function downloadStudentTemplate() {
-  const content = 'full_name,college_email,roll_number,branch_code,semester,section_name,phone,barcode\nExample Student,student@hbtu.ac.in,250107001,FT,1,A,9876543210,1234567890\n';
+const importDefinitions = {
+  students: {
+    title: 'Students', description: 'Accounts, class assignment and optional ID-card barcode',
+    headers: 'full_name,college_email,roll_number,branch_code,semester,section_name,phone,barcode,password',
+    sample: 'Example Student,student@hbtu.ac.in,250107001,FT,1,A,9876543210,1234567890,StudentPass99'
+  },
+  teachers: {
+    title: 'Teachers', description: 'Faculty accounts, employee codes and initial passwords',
+    headers: 'full_name,college_email,employee_code,branch_code,phone,password',
+    sample: 'Example Teacher,teacher@hbtu.ac.in,FT-EMP-01,FT,9876543210,TeacherPass99'
+  },
+  subjects: {
+    title: 'Subjects', description: 'Subject codes, names and credits; existing codes are updated',
+    headers: 'subject_code,subject_name,credits', sample: 'FT-201,Fluid Mechanics,4'
+  },
+  courses: {
+    title: 'Courses', description: 'Map each subject to its teacher and class section',
+    headers: 'subject_code,teacher_employee_code,branch_code,semester,section_name,default_room',
+    sample: 'FT-201,FT-EMP-01,FT,1,A,210'
+  },
+  enrollments: {
+    title: 'Enrollments', description: 'Add student roll numbers to course rosters',
+    headers: 'subject_code,teacher_employee_code,branch_code,semester,section_name,student_roll_number',
+    sample: 'FT-201,FT-EMP-01,FT,1,A,250107001'
+  },
+  timetables: {
+    title: 'Timetable', description: 'Weekly periods with automatic teacher, section and room conflict checks',
+    headers: 'subject_code,teacher_employee_code,branch_code,semester,section_name,day_of_week,starts_at,ends_at,room,valid_from,valid_until',
+    sample: 'FT-201,FT-EMP-01,FT,1,A,Monday,10:00,11:00,210,2026-07-01,2026-12-31'
+  }
+};
+
+function downloadImportTemplate(entity) {
+  const definition = importDefinitions[entity];
+  if (!definition) return;
+  const content = `${definition.headers}\n${definition.sample}\n`;
   const url = URL.createObjectURL(new Blob([content], { type: 'text/csv' }));
   const anchor = document.createElement('a');
-  anchor.href = url; anchor.download = 'attendesk-student-import-template.csv'; anchor.click();
+  anchor.href = url; anchor.download = `attendesk-${entity}-import-template.csv`; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function openStudentImportDialog() {
-  openModal(`<span class="eyebrow">Bulk onboarding</span><h2>Import students from CSV</h2><p class="modal-copy">Create branches, semesters and sections first. The CSV headers must match the template.</p><button class="secondary compact" type="button" data-download-student-template>Download template</button><form id="student-import-form"><label>CSV file<input name="file" type="file" accept=".csv,text/csv" required /></label><button class="primary" type="submit">Import students</button><p class="field-note">Accepted columns: full_name, college_email, roll_number, branch_code, semester, section_name, phone, barcode. Maximum 1,000 rows.</p></form>`);
-  $('#student-import-form').addEventListener('submit', async formEvent => {
+function openImportDialog(entity) {
+  const definition = importDefinitions[entity];
+  if (!definition) return toast('This import type is not available');
+  openModal(`<span class="eyebrow">Bulk onboarding</span><h2>Import ${escapeHtml(definition.title)}</h2><p class="modal-copy">${escapeHtml(definition.description)}. Download the template so the column names stay exact.</p><button class="secondary compact" type="button" data-download-import-template="${entity}">Download CSV template</button><form id="bulk-import-form"><label>CSV file<input name="file" type="file" accept=".csv,text/csv" required /></label><div id="import-preview" class="import-preview">Choose a file to preview its row count.</div><button class="primary" type="submit">Import ${escapeHtml(definition.title)}</button><p class="field-note">Columns: ${escapeHtml(definition.headers)}. Maximum 1,000 rows.</p></form>`);
+  const fileInput = $('#bulk-import-form input[type="file"]');
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    const rows = file ? parseCsv(await file.text()) : [];
+    $('#import-preview').textContent = rows.length ? `${rows.length} data rows ready to import` : 'No data rows found in this file.';
+  });
+  $('#bulk-import-form').addEventListener('submit', async formEvent => {
     formEvent.preventDefault();
     const button = formEvent.submitter;
     const file = new FormData(formEvent.target).get('file');
@@ -1254,13 +1335,12 @@ function openStudentImportDialog() {
     setButtonBusy(button, true, 'Importing…');
     try {
       const rows = parseCsv(await file.text());
-      if (!rows.length) throw new Error('The CSV does not contain any student rows');
-      const result = await api('/api/admin/import/students', { method: 'POST', body: { rows } });
-      openModal(`<span class="eyebrow">Import complete</span><h2>${result.created} students created</h2><div class="import-summary"><span>${result.skipped} skipped</span><span>${result.errors.length} errors</span></div>${result.errors.length ? `<div class="import-errors">${result.errors.slice(0, 25).map(item => `<p><strong>Row ${item.row}</strong> ${escapeHtml(item.message)}</p>`).join('')}</div>` : '<p class="modal-copy">Every row was imported successfully.</p>'}<button class="primary" data-action="close-modal">Done</button>`);
-      state.peopleRole = 'student';
-      await navigate('people');
+      if (!rows.length) throw new Error('The CSV does not contain any data rows');
+      const result = await api(`/api/admin/import/${entity}`, { method: 'POST', body: { rows } });
+      openModal(`<span class="eyebrow">Import complete</span><h2>${result.created} created${result.updated ? ` · ${result.updated} updated` : ''}</h2><div class="import-summary"><span>${result.skipped || 0} skipped</span><span>${result.errors.length} errors</span></div>${result.errors.length ? `<div class="import-errors">${result.errors.slice(0, 50).map(item => `<p><strong>Row ${item.row}</strong> ${escapeHtml(item.message)}</p>`).join('')}</div><button class="secondary compact" data-download-import-errors>Copy error list</button>` : '<p class="modal-copy">Every row was imported successfully.</p>'}<button class="primary" data-page="bulk-import">Back to imports</button>`);
+      if (result.errors.length) $('#modal-content').dataset.importErrors = JSON.stringify(result.errors);
     } catch (error) {
-      toast(error.message || 'Student import failed');
+      toast(error.message || 'CSV import failed');
     } finally {
       setButtonBusy(button, false);
     }
@@ -1287,6 +1367,72 @@ async function openRosterDialog(offeringId, courseName) {
   openModal(`<span class="eyebrow">Course roster</span><h2>${escapeHtml(courseName)}</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Student</th><th>Roll number</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${escapeHtml(row.full_name)}</strong><br/><small>${escapeHtml(row.email)}</small></td><td>${escapeHtml(row.roll_number)}</td><td><button class="table-action danger" data-remove-enrollment="${row.id}" data-offering-id="${offeringId}" data-course-name="${escapeHtml(courseName)}">Remove</button></td></tr>`).join('') || emptyTableRow('No students are enrolled yet.', 3)}</tbody></table></div>`);
 }
 
+async function openAcademicEditDialog(entity, id) {
+  const [rows, branches, semesters] = await Promise.all([
+    entity === 'sections' ? api('/api/admin/sections') : api(`/api/admin/academic/${entity}`),
+    api('/api/admin/academic/branches'), api('/api/admin/academic/semesters')
+  ]);
+  const row = rows.find(item => item.id === id);
+  if (!row) throw new Error('Academic record not found');
+  let fields = '';
+  if (entity === 'branches') fields = `<label>Branch code<input name="code" required value="${escapeHtml(row.code)}" /></label><label>Branch name<input name="name" required value="${escapeHtml(row.name)}" /></label>`;
+  if (entity === 'subjects') fields = `<label>Subject code<input name="code" required value="${escapeHtml(row.code)}" /></label><label>Subject name<input name="name" required value="${escapeHtml(row.name)}" /></label><label>Credits<input name="credits" type="number" min="0" step="0.5" value="${escapeHtml(row.credits)}" /></label>`;
+  if (entity === 'semesters') fields = `<div class="field-grid"><label>Semester<input name="number" type="number" min="1" max="12" required value="${row.number}" /></label><label>Academic year<input name="academic_year" required value="${escapeHtml(row.academic_year)}" /></label></div><label>Term<select name="term">${['odd','even','summer'].map(term=>`<option ${row.term===term?'selected':''}>${term}</option>`).join('')}</select></label><div class="field-grid"><label>Starts on<input name="starts_on" type="date" required value="${String(row.starts_on).slice(0,10)}" /></label><label>Ends on<input name="ends_on" type="date" required value="${String(row.ends_on).slice(0,10)}" /></label></div>`;
+  if (entity === 'sections') fields = `<label>Section name<input name="name" required value="${escapeHtml(row.name)}" /></label><div class="field-grid"><label>Branch<select name="branchId">${branches.map(item=>`<option value="${item.id}" ${item.id===row.branch_id?'selected':''}>${escapeHtml(item.code)} · ${escapeHtml(item.name)}</option>`).join('')}</select></label><label>Semester<select name="semesterId">${semesters.map(item=>`<option value="${item.id}" ${item.id===row.semester_id?'selected':''}>Semester ${item.number} · ${escapeHtml(item.academic_year)}</option>`).join('')}</select></label></div>`;
+  openModal(`<span class="eyebrow">Academic setup</span><h2>Edit ${escapeHtml(entity.slice(0,-1))}</h2><form id="academic-edit-form">${fields}<button class="primary">Save changes</button></form>`);
+  $('#academic-edit-form').addEventListener('submit', async event => {
+    event.preventDefault(); const button = event.submitter; setButtonBusy(button, true, 'Saving…');
+    try {
+      const body = Object.fromEntries(new FormData(event.target).entries());
+      if (body.number) body.number = Number(body.number); if (body.credits) body.credits = Number(body.credits);
+      const path = entity === 'sections' ? `/api/admin/sections/${id}` : `/api/admin/academic/${entity}/${id}`;
+      await api(path, { method: 'PATCH', body }); closeModal(); toast('Changes saved'); await navigate('academic');
+    } catch (error) { toast(error.message); } finally { setButtonBusy(button, false); }
+  }, { once: true });
+}
+
+async function openOfferingEditDialog(id) {
+  const [offerings, subjects, teachers, sections, semesters] = await Promise.all([
+    api('/api/admin/offerings'), api('/api/admin/academic/subjects'), api('/api/admin/people?role=teacher'), api('/api/admin/sections'), api('/api/admin/academic/semesters')
+  ]);
+  const row = offerings.find(item => item.id === id);
+  if (!row) throw new Error('Course not found');
+  openModal(`<span class="eyebrow">Course allocation</span><h2>Edit course</h2><form id="offering-edit-form"><label>Subject<select name="subjectId">${subjects.map(item=>`<option value="${item.id}" ${item.id===row.subject_id?'selected':''}>${escapeHtml(item.code)} · ${escapeHtml(item.name)}</option>`).join('')}</select></label><label>Teacher<select name="teacherId">${teachers.map(item=>`<option value="${item.id}" ${item.id===row.teacher_id?'selected':''}>${escapeHtml(item.full_name)}</option>`).join('')}</select></label><label>Section<select name="sectionId">${sections.map(item=>`<option value="${item.id}" ${item.id===row.section_id?'selected':''}>${escapeHtml(item.branch_code)} · Sem ${item.semester_number} · ${escapeHtml(item.name)}</option>`).join('')}</select></label><label>Semester<select name="semesterId">${semesters.map(item=>`<option value="${item.id}" ${item.id===row.semester_id?'selected':''}>Semester ${item.number} · ${escapeHtml(item.academic_year)}</option>`).join('')}</select></label><label>Default room<input name="defaultRoom" required value="${escapeHtml(row.default_room)}" /></label><label class="check-label"><input name="active" type="checkbox" ${row.active?'checked':''} /> Active course</label><button class="primary">Save course</button></form>`);
+  $('#offering-edit-form').addEventListener('submit', async event => {
+    event.preventDefault(); const button=event.submitter; setButtonBusy(button,true,'Saving…');
+    try { const body=Object.fromEntries(new FormData(event.target).entries()); body.active=event.target.elements.active.checked; await api(`/api/admin/offerings/${id}`,{method:'PATCH',body}); closeModal(); toast('Course updated'); await navigate('courses'); }
+    catch(error){toast(error.message);} finally{setButtonBusy(button,false);}
+  }, { once:true });
+}
+
+async function openTimetableEditDialog(id) {
+  const entries = await api('/api/admin/timetable');
+  const row = entries.find(item => item.id === id);
+  if (!row) throw new Error('Timetable entry not found');
+  openModal(`<span class="eyebrow">Timetable</span><h2>Edit class period</h2><form id="period-edit-form"><label>Day<select name="dayOfWeek">${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map((day,index)=>`<option value="${index+1}" ${row.day_of_week===index+1?'selected':''}>${day}</option>`).join('')}</select></label><label>Room<input name="room" required value="${escapeHtml(row.room)}" /></label><div class="field-grid"><label>Starts<input name="startsAt" type="time" required value="${String(row.starts_at).slice(0,5)}" /></label><label>Ends<input name="endsAt" type="time" required value="${String(row.ends_at).slice(0,5)}" /></label></div><div class="field-grid"><label>Valid from<input name="validFrom" type="date" required value="${String(row.valid_from).slice(0,10)}" /></label><label>Valid until<input name="validUntil" type="date" required value="${String(row.valid_until).slice(0,10)}" /></label></div><button class="primary">Save period</button></form>`);
+  $('#period-edit-form').addEventListener('submit', async event=>{event.preventDefault();const button=event.submitter;setButtonBusy(button,true,'Saving…');try{const body=Object.fromEntries(new FormData(event.target).entries());body.dayOfWeek=Number(body.dayOfWeek);await api(`/api/admin/timetable/${id}`,{method:'PATCH',body});closeModal();toast('Timetable updated');await navigate('timetable');}catch(error){toast(error.message);}finally{setButtonBusy(button,false);}}, {once:true});
+}
+
+async function openCorrectionSession(sessionId) {
+  const data = await api(`/api/admin/attendance/sessions/${sessionId}/records`);
+  openModal(`<span class="eyebrow">${escapeHtml(data.session.subject_code)} · ${new Date(data.session.starts_at).toLocaleString()}</span><h2>Correct attendance roster</h2><p class="modal-copy">Every change requires a reason and is permanently recorded in the audit history.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Student</th><th>Current</th><th>Appeal</th><th>History</th><th>Action</th></tr></thead><tbody>${data.records.map(row=>`<tr><td><strong>${escapeHtml(row.full_name)}</strong><br/><small>${escapeHtml(row.roll_number)}</small></td><td><span class="pill ${row.status==='absent'?'warn':''}">${titleCase(row.status)}</span></td><td>${row.appeal_status?`<span class="pill ${row.appeal_status==='pending'?'warn':''}">${titleCase(row.appeal_status)}</span>`:'—'}</td><td>${row.correction_count || 0} changes</td><td><button class="table-action" data-correct-student="${row.student_id}" data-correction-session="${sessionId}" data-student-name="${escapeHtml(row.full_name)}" data-current-status="${row.status}">Correct</button></td></tr>`).join('')}</tbody></table></div>${data.history.length?`<details class="history-details"><summary>View ${data.history.length} correction events</summary>${data.history.map(item=>`<p><strong>${new Date(item.created_at).toLocaleString()}</strong> · ${escapeHtml(item.actor || 'System')} · ${titleCase(item.action)}</p>`).join('')}</details>`:''}`);
+}
+
+function openCorrectionDialog(sessionId, studentId, studentName, currentStatus) {
+  openModal(`<span class="eyebrow">Post-session correction</span><h2>${escapeHtml(studentName)}</h2><form id="attendance-correction-form"><label>Attendance status<select name="status">${['present','absent','excused'].map(status=>`<option value="${status}" ${status===currentStatus?'selected':''}>${titleCase(status)}</option>`).join('')}</select></label><label>Reason<textarea name="reason" required minlength="4" rows="4" placeholder="Explain why this record is being changed"></textarea></label><button class="primary">Save audited correction</button></form>`);
+  $('#attendance-correction-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;setButtonBusy(button,true,'Saving…');try{await api(`/api/admin/attendance/sessions/${sessionId}/students/${studentId}`,{method:'PATCH',body:Object.fromEntries(new FormData(event.target).entries())});toast('Attendance corrected and logged');await openCorrectionSession(sessionId);}catch(error){toast(error.message);}finally{setButtonBusy(button,false);}}, {once:true});
+}
+
+function openAppealReviewDialog(id, studentName, requestedStatus) {
+  openModal(`<span class="eyebrow">Attendance appeal</span><h2>Review ${escapeHtml(studentName)}</h2><form id="appeal-review-form"><label>Decision<select name="decision"><option value="approved">Approve correction</option><option value="rejected">Reject appeal</option></select></label><label>Status if approved<select name="status">${['present','absent','excused'].map(status=>`<option value="${status}" ${status===requestedStatus?'selected':''}>${titleCase(status)}</option>`).join('')}</select></label><label>Resolution note<textarea name="resolutionNote" required minlength="4" rows="4" placeholder="Explain the decision for the student and audit trail"></textarea></label><button class="primary">Submit decision</button></form>`);
+  $('#appeal-review-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;setButtonBusy(button,true,'Saving…');try{await api(`/api/admin/attendance/appeals/${id}`,{method:'PATCH',body:Object.fromEntries(new FormData(event.target).entries())});closeModal();toast('Appeal resolved');await navigate('corrections');}catch(error){toast(error.message);}finally{setButtonBusy(button,false);}}, {once:true});
+}
+
+function openStudentAppealDialog(recordId, subject) {
+  openModal(`<span class="eyebrow">Attendance appeal</span><h2>${escapeHtml(subject)}</h2><form id="student-appeal-form"><label>Requested status<select name="requestedStatus"><option value="present">Present</option><option value="excused">Excused</option><option value="absent">Absent</option></select></label><label>What should be corrected?<textarea name="reason" required minlength="4" rows="4" placeholder="Describe what happened and any evidence the teacher can verify"></textarea></label><button class="primary">Submit appeal</button></form>`);
+  $('#student-appeal-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.submitter;setButtonBusy(button,true,'Submitting…');try{await api(`/api/student/attendance/${recordId}/appeals`,{method:'POST',body:Object.fromEntries(new FormData(event.target).entries())});closeModal();toast('Appeal submitted');await navigate('overview');}catch(error){toast(error.message);}finally{setButtonBusy(button,false);}}, {once:true});
+}
+
 document.addEventListener('click', async event => {
   const pageButton = event.target.closest('[data-page]');
   if (pageButton) {
@@ -1301,7 +1447,31 @@ document.addEventListener('click', async event => {
     sessionStorage.clear(); state.token = ''; state.refresh = ''; state.user = null; location.reload(); return;
   }
   if (event.target.closest('[data-action="close-modal"]')) return closeModal();
-  if (event.target.closest('[data-download-student-template]')) return downloadStudentTemplate();
+  const downloadTemplate = event.target.closest('[data-download-import-template]');
+  if (downloadTemplate) return downloadImportTemplate(downloadTemplate.dataset.downloadImportTemplate);
+  const openImport = event.target.closest('[data-open-import]');
+  if (openImport) return openImportDialog(openImport.dataset.openImport);
+  if (event.target.closest('[data-download-import-errors]')) {
+    const errors = JSON.parse($('#modal-content').dataset.importErrors || '[]');
+    await navigator.clipboard.writeText(errors.map(item => `Row ${item.row}: ${item.message}`).join('\n'));
+    return toast('Error list copied');
+  }
+  if (event.target.closest('[data-clear-report-filters]')) { state.reportFilters = {}; return navigate('reports'); }
+  if (event.target.closest('[data-clear-correction-filters]')) { state.correctionFilters = {}; return navigate('corrections'); }
+  const editAcademic = event.target.closest('[data-edit-academic]');
+  if (editAcademic) return openAcademicEditDialog(editAcademic.dataset.entity, editAcademic.dataset.editAcademic).catch(error => toast(error.message));
+  const editOffering = event.target.closest('[data-edit-offering]');
+  if (editOffering) return openOfferingEditDialog(editOffering.dataset.editOffering).catch(error => toast(error.message));
+  const editPeriod = event.target.closest('[data-edit-period]');
+  if (editPeriod) return openTimetableEditDialog(editPeriod.dataset.editPeriod).catch(error => toast(error.message));
+  const correction = event.target.closest('[data-open-correction]');
+  if (correction) return openCorrectionSession(correction.dataset.openCorrection).catch(error => toast(error.message));
+  const correctStudent = event.target.closest('[data-correct-student]');
+  if (correctStudent) return openCorrectionDialog(correctStudent.dataset.correctionSession, correctStudent.dataset.correctStudent, correctStudent.dataset.studentName, correctStudent.dataset.currentStatus);
+  const reviewAppeal = event.target.closest('[data-review-appeal]');
+  if (reviewAppeal) return openAppealReviewDialog(reviewAppeal.dataset.reviewAppeal, reviewAppeal.dataset.appealStudent, reviewAppeal.dataset.requestedStatus);
+  const studentAppeal = event.target.closest('[data-student-appeal]');
+  if (studentAppeal) return openStudentAppealDialog(studentAppeal.dataset.studentAppeal, studentAppeal.dataset.subject);
   const addPerson = event.target.closest('[data-add-person]');
   if (addPerson) {
     setButtonBusy(addPerson, true, 'Loading…');
@@ -1310,7 +1480,6 @@ document.addEventListener('click', async event => {
     finally { setButtonBusy(addPerson, false); }
     return;
   }
-  if (event.target.closest('[data-import-students]')) return openStudentImportDialog();
   const resetPassword = event.target.closest('[data-reset-user-password]');
   if (resetPassword) return openResetPasswordDialog(resetPassword.dataset.resetUserPassword, resetPassword.dataset.userName);
   const viewRoster = event.target.closest('[data-view-roster]');
@@ -1511,6 +1680,16 @@ document.addEventListener('click', async event => {
 });
 
 document.addEventListener('submit', async event => {
+  if (event.target.id === 'report-filter-form') {
+    event.preventDefault();
+    state.reportFilters = Object.fromEntries([...new FormData(event.target).entries()].filter(([, value]) => value));
+    return navigate('reports');
+  }
+  if (event.target.id === 'correction-filter-form') {
+    event.preventDefault();
+    state.correctionFilters = Object.fromEntries([...new FormData(event.target).entries()].filter(([, value]) => value));
+    return navigate('corrections');
+  }
   const academic = event.target.dataset.createAcademic;
   const managed = academic || event.target.hasAttribute('data-create-section') || event.target.id === 'timetable-form' || event.target.hasAttribute('data-create-offering') || event.target.hasAttribute('data-enroll-student');
   if (!managed) return;
@@ -1550,7 +1729,10 @@ document.addEventListener('submit', async event => {
 
 async function downloadReport(id, format) {
   try {
-    const blob = await api(`/api/reports/offerings/${id}.${format}`);
+    const params = new URLSearchParams();
+    if (state.reportFilters.from) params.set('from', state.reportFilters.from);
+    if (state.reportFilters.to) params.set('to', state.reportFilters.to);
+    const blob = await api(`/api/reports/offerings/${id}.${format}${params.size ? `?${params}` : ''}`);
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a'); anchor.href = url; anchor.download = `attendance-report.${format}`; anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);

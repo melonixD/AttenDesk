@@ -326,12 +326,16 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       return res.status(401).json({ error: "INVALID_CREDENTIALS", message: "Name and roll number do not match a registered student" });
     }
     if (user.status !== "active") return res.status(403).json({ error: "ACCOUNT_NOT_ACTIVE", message: "Your account is waiting for administrator approval" });
-    if (studentPasswordRequired || user.password_hash) {
+    const requestedClientType = req.body.clientType || "web_ble";
+    if (requestedClientType === "mobile" && !user.password_hash) {
+      return res.status(403).json({ error: "PASSWORD_NOT_SET", message: "Your password has not been assigned yet. Ask an administrator to set it." });
+    }
+    if (requestedClientType === "mobile" || studentPasswordRequired || user.password_hash) {
       if (!verifyPassword(String(req.body.password || ""), user.password_hash)) {
         return res.status(401).json({ error: "INVALID_CREDENTIALS", message: "Incorrect password" });
       }
     }
-    return issueSession({ req, res, user, requestedClientType: req.body.clientType || "web_ble", installationId: String(req.body.installationId || "").trim(), deviceName: req.body.deviceName, platform: req.body.platform });
+    return issueSession({ req, res, user, requestedClientType, installationId: String(req.body.installationId || "").trim(), deviceName: req.body.deviceName, platform: req.body.platform });
   }));
 
   app.post("/api/auth/set-password", authenticate, asyncRoute(async (req, res) => {
@@ -525,10 +529,26 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   }));
 
   app.patch("/api/admin/sections/:id", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    if (req.body.branchId || req.body.semesterId) {
+      const current = await db.query(
+        `SELECT s.branch_id,s.semester_id FROM sections s JOIN branches b ON b.id=s.branch_id
+         WHERE s.id=$1 AND b.organization_id=$2`, [req.params.id, req.user.organization_id]
+      );
+      if (!current.rowCount) return res.status(404).json({ error: "SECTION_NOT_FOUND" });
+      const branchId = req.body.branchId || current.rows[0].branch_id;
+      const semesterId = req.body.semesterId || current.rows[0].semester_id;
+      const parents = await db.query(
+        `SELECT 1 FROM branches b CROSS JOIN semesters se
+         WHERE b.id=$1 AND se.id=$2 AND b.organization_id=$3 AND se.organization_id=$3`,
+        [branchId, semesterId, req.user.organization_id]
+      );
+      if (!parents.rowCount) return res.status(400).json({ error: "INVALID_BRANCH_OR_SEMESTER" });
+    }
     const result = await db.query(
-      `UPDATE sections s SET name=COALESCE($1,s.name),active=COALESCE($2,s.active)
-       FROM branches b WHERE s.id=$3 AND b.id=s.branch_id AND b.organization_id=$4 RETURNING s.*`,
-      [req.body.name || null, req.body.active ?? null, req.params.id, req.user.organization_id]
+      `UPDATE sections s SET name=COALESCE($1,s.name),active=COALESCE($2,s.active),
+         branch_id=COALESCE($3,s.branch_id),semester_id=COALESCE($4,s.semester_id)
+       FROM branches b WHERE s.id=$5 AND b.id=s.branch_id AND b.organization_id=$6 RETURNING s.*`,
+      [req.body.name || null, req.body.active ?? null, req.body.branchId || null, req.body.semesterId || null, req.params.id, req.user.organization_id]
     );
     if (!result.rowCount) return res.status(404).json({ error: "SECTION_NOT_FOUND" });
     res.json(result.rows[0]);
@@ -715,8 +735,9 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
 
   app.get("/api/admin/offerings", authenticate, roles("admin"), asyncRoute(async (req, res) => {
     const result = await db.query(
-      `SELECT o.id,o.default_room,o.active,su.name AS subject,su.code AS subject_code,u.full_name AS teacher,
-       b.name AS branch,sc.name AS section,se.number AS semester,
+      `SELECT o.id,o.subject_id,o.teacher_id,o.section_id,o.semester_id,o.default_room,o.active,
+       su.name AS subject,su.code AS subject_code,u.full_name AS teacher,
+       b.id AS branch_id,b.name AS branch,b.code AS branch_code,sc.name AS section,se.number AS semester,se.academic_year,
        (SELECT count(*)::int FROM student_enrollments e WHERE e.offering_id=o.id) AS enrolled_students
        FROM course_offerings o JOIN subjects su ON su.id=o.subject_id JOIN users u ON u.id=o.teacher_id
        JOIN sections sc ON sc.id=o.section_id JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=o.semester_id
@@ -740,6 +761,37 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     );
     if (!result.rowCount) return res.status(400).json({ error: "INVALID_COURSE_ASSIGNMENT" });
     res.status(201).json(result.rows[0]);
+  }));
+
+  app.patch("/api/admin/offerings/:id", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const current = await db.query("SELECT * FROM course_offerings WHERE id=$1 AND organization_id=$2", [req.params.id, req.user.organization_id]);
+    if (!current.rowCount) return res.status(404).json({ error: "OFFERING_NOT_FOUND" });
+    const before = current.rows[0];
+    const next = {
+      subjectId: req.body.subjectId || before.subject_id,
+      teacherId: req.body.teacherId || before.teacher_id,
+      sectionId: req.body.sectionId || before.section_id,
+      semesterId: req.body.semesterId || before.semester_id,
+      defaultRoom: req.body.defaultRoom === undefined ? before.default_room : cleanRoom(req.body.defaultRoom),
+      active: req.body.active === undefined ? before.active : Boolean(req.body.active)
+    };
+    if (!next.defaultRoom) return res.status(400).json({ error: "ROOM_REQUIRED" });
+    const valid = await db.query(
+      `SELECT 1 WHERE
+       EXISTS(SELECT 1 FROM teachers t JOIN users u ON u.id=t.user_id WHERE t.user_id=$2 AND u.organization_id=$1)
+       AND EXISTS(SELECT 1 FROM subjects su WHERE su.id=$3 AND su.organization_id=$1)
+       AND EXISTS(SELECT 1 FROM sections sc JOIN branches b ON b.id=sc.branch_id WHERE sc.id=$4 AND sc.semester_id=$5 AND b.organization_id=$1)
+       AND EXISTS(SELECT 1 FROM semesters se WHERE se.id=$5 AND se.organization_id=$1)`,
+      [req.user.organization_id, next.teacherId, next.subjectId, next.sectionId, next.semesterId]
+    );
+    if (!valid.rowCount) return res.status(400).json({ error: "INVALID_COURSE_ASSIGNMENT" });
+    const updated = await db.query(
+      `UPDATE course_offerings SET subject_id=$1,teacher_id=$2,section_id=$3,semester_id=$4,default_room=$5,active=$6
+       WHERE id=$7 AND organization_id=$8 RETURNING *`,
+      [next.subjectId, next.teacherId, next.sectionId, next.semesterId, next.defaultRoom, next.active, req.params.id, req.user.organization_id]
+    );
+    await db.transaction((client) => audit(client, req, "COURSE_UPDATED", "course_offering", req.params.id, before, updated.rows[0]));
+    res.json(updated.rows[0]);
   }));
 
   app.post("/api/admin/enrollments", authenticate, roles("admin"), asyncRoute(async (req, res) => {
@@ -1142,6 +1194,149 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     });
   }));
 
+  /* ---- Admin: closed-session corrections and appeal queue --------------- */
+  app.get("/api/admin/attendance/sessions", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const result = await db.query(
+      `SELECT a.id,a.starts_at,a.ends_at,a.status,a.room,su.name AS subject,su.code AS subject_code,
+              u.full_name AS teacher,b.id AS branch_id,b.name AS branch,sc.id AS section_id,sc.name AS section,
+              se.id AS semester_id,se.number AS semester,
+              count(ar.id)::int AS recorded,
+              count(ar.id) FILTER (WHERE ar.status='present')::int AS present,
+              count(ap.id) FILTER (WHERE ap.status='pending')::int AS pending_appeals
+       FROM attendance_sessions a
+       JOIN course_offerings o ON o.id=a.offering_id
+       JOIN subjects su ON su.id=o.subject_id JOIN users u ON u.id=a.teacher_id
+       JOIN sections sc ON sc.id=o.section_id JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=o.semester_id
+       LEFT JOIN attendance_records ar ON ar.session_id=a.id
+       LEFT JOIN attendance_appeals ap ON ap.attendance_record_id=ar.id AND ap.status='pending'
+       WHERE o.organization_id=$1 AND a.status<>'cancelled' AND (a.status='closed' OR a.ends_at<=now())
+         AND ($2::uuid IS NULL OR b.id=$2) AND ($3::uuid IS NULL OR se.id=$3)
+         AND ($4::uuid IS NULL OR sc.id=$4) AND ($5::uuid IS NULL OR su.id=$5)
+         AND ($6::date IS NULL OR a.starts_at::date >= $6::date)
+         AND ($7::date IS NULL OR a.starts_at::date <= $7::date)
+       GROUP BY a.id,su.name,su.code,u.full_name,b.id,b.name,sc.id,sc.name,se.id,se.number
+       ORDER BY a.starts_at DESC LIMIT 500`,
+      [req.user.organization_id, req.query.branchId || null, req.query.semesterId || null,
+       req.query.sectionId || null, req.query.subjectId || null, req.query.from || null, req.query.to || null]
+    );
+    res.json(result.rows);
+  }));
+
+  app.get("/api/admin/attendance/sessions/:id/records", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const session = await db.query(
+      `SELECT a.id,a.starts_at,a.ends_at,a.room,a.status,su.name AS subject,su.code AS subject_code,
+              u.full_name AS teacher,b.name AS branch,sc.name AS section,se.number AS semester
+       FROM attendance_sessions a JOIN course_offerings o ON o.id=a.offering_id
+       JOIN subjects su ON su.id=o.subject_id JOIN users u ON u.id=a.teacher_id
+       JOIN sections sc ON sc.id=o.section_id JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=o.semester_id
+       WHERE a.id=$1 AND o.organization_id=$2`, [req.params.id, req.user.organization_id]
+    );
+    if (!session.rowCount) return res.status(404).json({ error: "SESSION_NOT_FOUND" });
+    if (session.rows[0].status === 'active' && new Date(session.rows[0].ends_at).getTime() <= Date.now()) {
+      await db.transaction(async (client) => {
+        await client.query("SELECT id FROM attendance_sessions WHERE id=$1 FOR UPDATE", [req.params.id]);
+        const done = await finaliseSession(client, req, req.params.id);
+        await audit(client, req, "ATTENDANCE_SESSION_ADMIN_FINALISED", "attendance_session", req.params.id, session.rows[0], { ...done.session, absentWritten: done.absentWritten });
+      });
+      session.rows[0].status = 'closed';
+    }
+    const records = await db.query(
+      `SELECT s.user_id AS student_id,u.full_name,s.roll_number,ar.id AS record_id,
+              COALESCE(ar.status,'absent') AS status,ar.method,ar.reason,ar.marked_at,
+              ap.id AS appeal_id,ap.status AS appeal_status,ap.reason AS appeal_reason,ap.requested_status,
+              (SELECT count(*)::int FROM audit_logs al WHERE al.entity_type='attendance_record' AND al.entity_id=ar.id::text AND al.action IN ('ATTENDANCE_CORRECTED','ATTENDANCE_APPEAL_APPROVED')) AS correction_count
+       FROM attendance_sessions a JOIN student_enrollments e ON e.offering_id=a.offering_id
+       JOIN students s ON s.user_id=e.student_id JOIN users u ON u.id=s.user_id
+       LEFT JOIN attendance_records ar ON ar.session_id=a.id AND ar.student_id=s.user_id
+       LEFT JOIN LATERAL (
+         SELECT * FROM attendance_appeals aa WHERE aa.attendance_record_id=ar.id ORDER BY aa.created_at DESC LIMIT 1
+       ) ap ON true
+       WHERE a.id=$1 ORDER BY s.roll_number`, [req.params.id]
+    );
+    const history = await db.query(
+      `SELECT al.id,al.entity_id,al.action,al.before_data,al.after_data,al.created_at,u.full_name AS actor
+       FROM audit_logs al LEFT JOIN users u ON u.id=al.actor_id
+       WHERE al.organization_id=$1 AND al.entity_type='attendance_record'
+         AND al.action IN ('ATTENDANCE_CORRECTED','ATTENDANCE_APPEAL_APPROVED')
+         AND al.entity_id IN (SELECT id::text FROM attendance_records WHERE session_id=$2)
+       ORDER BY al.created_at DESC`, [req.user.organization_id, req.params.id]
+    );
+    res.json({ session: session.rows[0], records: records.rows, history: history.rows });
+  }));
+
+  app.patch("/api/admin/attendance/sessions/:sessionId/students/:studentId", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const status = String(req.body.status || "");
+    const reason = String(req.body.reason || "").trim();
+    if (!['present', 'absent', 'excused'].includes(status)) return res.status(400).json({ error: "INVALID_ATTENDANCE_STATUS" });
+    if (reason.length < 4) return res.status(400).json({ error: "REASON_REQUIRED", message: "Enter a correction reason of at least 4 characters" });
+    const corrected = await db.transaction(async (client) => {
+      const allowed = await client.query(
+        `SELECT a.id FROM attendance_sessions a JOIN course_offerings o ON o.id=a.offering_id
+         JOIN student_enrollments e ON e.offering_id=o.id AND e.student_id=$2
+         WHERE a.id=$1 AND o.organization_id=$3 AND a.status<>'cancelled' AND (a.status='closed' OR a.ends_at<=now()) FOR UPDATE OF a`,
+        [req.params.sessionId, req.params.studentId, req.user.organization_id]
+      );
+      if (!allowed.rowCount) throw Object.assign(new Error("Closed session or student not found"), { status: 404, code: "SESSION_OR_STUDENT_NOT_FOUND" });
+      const before = await client.query("SELECT * FROM attendance_records WHERE session_id=$1 AND student_id=$2 FOR UPDATE", [req.params.sessionId, req.params.studentId]);
+      const saved = await client.query(
+        `INSERT INTO attendance_records(session_id,student_id,status,method,marked_by,reason,proof)
+         VALUES($1,$2,$3,'admin_correction',$4,$5,'admin')
+         ON CONFLICT(session_id,student_id) DO UPDATE SET status=EXCLUDED.status,method='admin_correction',marked_by=EXCLUDED.marked_by,
+           reason=EXCLUDED.reason,proof='admin',marked_at=now() RETURNING *`,
+        [req.params.sessionId, req.params.studentId, status, req.user.id, reason]
+      );
+      await audit(client, req, "ATTENDANCE_CORRECTED", "attendance_record", saved.rows[0].id, before.rows[0] || null, saved.rows[0]);
+      return saved.rows[0];
+    });
+    res.json(corrected);
+  }));
+
+  app.get("/api/admin/attendance/appeals", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const result = await db.query(
+      `SELECT ap.*,u.full_name,s.roll_number,su.name AS subject,su.code AS subject_code,a.starts_at,a.room,ar.status AS current_status
+       FROM attendance_appeals ap JOIN attendance_records ar ON ar.id=ap.attendance_record_id
+       JOIN attendance_sessions a ON a.id=ar.session_id JOIN course_offerings o ON o.id=a.offering_id JOIN subjects su ON su.id=o.subject_id
+       JOIN students s ON s.user_id=ap.student_id JOIN users u ON u.id=s.user_id
+       WHERE ap.organization_id=$1 AND ($2::text IS NULL OR ap.status=$2)
+       ORDER BY CASE WHEN ap.status='pending' THEN 0 ELSE 1 END,ap.created_at DESC LIMIT 500`,
+      [req.user.organization_id, req.query.status || null]
+    );
+    res.json(result.rows);
+  }));
+
+  app.patch("/api/admin/attendance/appeals/:id", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const decision = String(req.body.decision || "");
+    const resolutionNote = String(req.body.resolutionNote || "").trim();
+    if (!['approved', 'rejected'].includes(decision)) return res.status(400).json({ error: "INVALID_APPEAL_DECISION" });
+    if (resolutionNote.length < 4) return res.status(400).json({ error: "RESOLUTION_NOTE_REQUIRED" });
+    const result = await db.transaction(async (client) => {
+      const found = await client.query(
+        `SELECT ap.*,ar.session_id,ar.status AS current_status FROM attendance_appeals ap
+         JOIN attendance_records ar ON ar.id=ap.attendance_record_id
+         WHERE ap.id=$1 AND ap.organization_id=$2 AND ap.status='pending' FOR UPDATE OF ap,ar`,
+        [req.params.id, req.user.organization_id]
+      );
+      if (!found.rowCount) throw Object.assign(new Error("Pending appeal not found"), { status: 404, code: "APPEAL_NOT_FOUND" });
+      const appeal = found.rows[0];
+      if (decision === 'approved') {
+        const nextStatus = ['present', 'absent', 'excused'].includes(req.body.status) ? req.body.status : appeal.requested_status;
+        const beforeRecord = await client.query("SELECT * FROM attendance_records WHERE id=$1", [appeal.attendance_record_id]);
+        const updatedRecord = await client.query(
+          `UPDATE attendance_records SET status=$1,method='admin_correction',marked_by=$2,reason=$3,proof='admin',marked_at=now()
+           WHERE id=$4 RETURNING *`, [nextStatus, req.user.id, `Appeal approved: ${resolutionNote}`, appeal.attendance_record_id]
+        );
+        await audit(client, req, "ATTENDANCE_APPEAL_APPROVED", "attendance_record", appeal.attendance_record_id, beforeRecord.rows[0], updatedRecord.rows[0]);
+      }
+      const updated = await client.query(
+        `UPDATE attendance_appeals SET status=$1,resolution_note=$2,reviewed_by=$3,reviewed_at=now(),updated_at=now()
+         WHERE id=$4 RETURNING *`, [decision, resolutionNote, req.user.id, req.params.id]
+      );
+      await audit(client, req, decision === 'approved' ? "APPEAL_APPROVED" : "APPEAL_REJECTED", "attendance_appeal", req.params.id, appeal, updated.rows[0]);
+      return updated.rows[0];
+    });
+    res.json(result);
+  }));
+
   app.get("/api/student/dashboard", authenticate, roles("student"), asyncRoute(async (req, res) => {
     const result = await db.query(
       `SELECT o.id AS offering_id,su.name AS subject,su.code AS subject_code,u.full_name AS teacher,
@@ -1171,17 +1366,52 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const limit = Math.max(1, Math.min(250, Number(req.query.limit) || 100));
     const result = await db.query(
       `SELECT a.id,a.starts_at,a.ends_at,a.room,su.name AS subject,su.code AS subject_code,u.full_name AS teacher,
-       COALESCE(ar.status,'absent') AS status,ar.method,ar.marked_at
+       ar.id AS attendance_record_id,COALESCE(ar.status,'absent') AS status,ar.method,ar.marked_at,ar.reason AS correction_reason,
+       ap.id AS appeal_id,ap.status AS appeal_status,ap.reason AS appeal_reason,ap.requested_status,ap.resolution_note,ap.created_at AS appealed_at
        FROM student_enrollments e JOIN course_offerings o ON o.id=e.offering_id JOIN attendance_sessions a ON a.offering_id=o.id
        JOIN subjects su ON su.id=o.subject_id JOIN users u ON u.id=o.teacher_id
        LEFT JOIN attendance_records ar ON ar.session_id=a.id AND ar.student_id=e.student_id
+       LEFT JOIN LATERAL (SELECT * FROM attendance_appeals aa WHERE aa.attendance_record_id=ar.id ORDER BY aa.created_at DESC LIMIT 1) ap ON true
        WHERE e.student_id=$1 AND a.status<>'cancelled' AND (a.status='closed' OR a.ends_at<=now())
        ORDER BY a.starts_at DESC LIMIT $2`, [req.user.id, limit]
     );
     res.json(result.rows);
   }));
 
-  const reportData = async (offeringId, organizationId, teacherId = null) => {
+  app.get("/api/student/appeals", authenticate, roles("student"), asyncRoute(async (req, res) => {
+    const result = await db.query(
+      `SELECT ap.*,ar.status AS current_status,a.starts_at,a.room,su.name AS subject,su.code AS subject_code,
+              reviewer.full_name AS reviewed_by_name
+       FROM attendance_appeals ap JOIN attendance_records ar ON ar.id=ap.attendance_record_id
+       JOIN attendance_sessions a ON a.id=ar.session_id JOIN course_offerings o ON o.id=a.offering_id JOIN subjects su ON su.id=o.subject_id
+       LEFT JOIN users reviewer ON reviewer.id=ap.reviewed_by
+       WHERE ap.student_id=$1 AND ap.organization_id=$2 ORDER BY ap.created_at DESC`,
+      [req.user.id, req.user.organization_id]
+    );
+    res.json(result.rows);
+  }));
+
+  app.post("/api/student/attendance/:recordId/appeals", authenticate, roles("student"), asyncRoute(async (req, res) => {
+    const reason = String(req.body.reason || "").trim();
+    const requestedStatus = ['present', 'absent', 'excused'].includes(req.body.requestedStatus) ? req.body.requestedStatus : 'present';
+    if (reason.length < 4) return res.status(400).json({ error: "REASON_REQUIRED", message: "Explain the attendance issue in at least 4 characters" });
+    const record = await db.query(
+      `SELECT ar.id FROM attendance_records ar JOIN attendance_sessions a ON a.id=ar.session_id
+       JOIN course_offerings o ON o.id=a.offering_id WHERE ar.id=$1 AND ar.student_id=$2 AND o.organization_id=$3
+       AND (a.status='closed' OR a.ends_at<=now())`,
+      [req.params.recordId, req.user.id, req.user.organization_id]
+    );
+    if (!record.rowCount) return res.status(404).json({ error: "ATTENDANCE_RECORD_NOT_FOUND" });
+    const result = await db.query(
+      `INSERT INTO attendance_appeals(organization_id,attendance_record_id,student_id,reason,requested_status)
+       VALUES($1,$2,$3,$4,$5) RETURNING *`,
+      [req.user.organization_id, req.params.recordId, req.user.id, reason, requestedStatus]
+    );
+    await db.transaction((client) => audit(client, req, "ATTENDANCE_APPEAL_SUBMITTED", "attendance_appeal", result.rows[0].id, null, result.rows[0]));
+    res.status(201).json(result.rows[0]);
+  }));
+
+  const reportData = async (offeringId, organizationId, teacherId = null, dateFrom = null, dateTo = null) => {
     const offeringResult = await db.query(
       `SELECT o.id,su.name AS subject_name,su.code AS subject_code,b.name AS branch_name,sc.name AS section_name,org.attendance_threshold
        FROM course_offerings o JOIN subjects su ON su.id=o.subject_id JOIN sections sc ON sc.id=o.section_id JOIN branches b ON b.id=sc.branch_id
@@ -1195,25 +1425,27 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
        count(DISTINCT a.id) FILTER(WHERE a.status<>'cancelled' AND (a.status='closed' OR a.ends_at<=now()))::int AS conducted,
        count(DISTINCT ar.session_id) FILTER(WHERE ar.status='present' AND a.status<>'cancelled')::int AS attended
        FROM student_enrollments e JOIN students s ON s.user_id=e.student_id JOIN users u ON u.id=s.user_id
-       LEFT JOIN attendance_sessions a ON a.offering_id=e.offering_id LEFT JOIN attendance_records ar ON ar.session_id=a.id AND ar.student_id=e.student_id
-       WHERE e.offering_id=$1 GROUP BY u.full_name,s.roll_number ORDER BY s.roll_number`, [offeringId]
+       LEFT JOIN attendance_sessions a ON a.offering_id=e.offering_id
+         AND ($2::date IS NULL OR a.starts_at::date >= $2::date) AND ($3::date IS NULL OR a.starts_at::date <= $3::date)
+       LEFT JOIN attendance_records ar ON ar.session_id=a.id AND ar.student_id=e.student_id
+       WHERE e.offering_id=$1 GROUP BY u.full_name,s.roll_number ORDER BY s.roll_number`, [offeringId, dateFrom, dateTo]
     );
     const threshold = Number(offering.attendance_threshold);
     const rows = rowsResult.rows.map((row) => {
       const percentage = row.conducted ? Math.round((row.attended / row.conducted) * 1000) / 10 : 0;
       return { ...row, percentage, below_threshold: row.conducted > 0 && percentage < threshold };
     });
-    return { offering, rows, threshold };
+    return { offering: { ...offering, date_from: dateFrom, date_to: dateTo }, rows, threshold };
   };
 
   app.get("/api/reports/offerings/:id", authenticate, roles("teacher", "admin"), asyncRoute(async (req, res) => {
-    const data = await reportData(req.params.id, req.user.organization_id, req.user.role === "teacher" ? req.user.id : null);
+    const data = await reportData(req.params.id, req.user.organization_id, req.user.role === "teacher" ? req.user.id : null, req.query.from || null, req.query.to || null);
     if (!data) return res.status(404).json({ error: "OFFERING_NOT_FOUND" });
     res.json(data);
   }));
 
   app.get("/api/reports/offerings/:id.xlsx", authenticate, roles("teacher", "admin"), asyncRoute(async (req, res) => {
-    const data = await reportData(req.params.id, req.user.organization_id, req.user.role === "teacher" ? req.user.id : null);
+    const data = await reportData(req.params.id, req.user.organization_id, req.user.role === "teacher" ? req.user.id : null, req.query.from || null, req.query.to || null);
     if (!data) return res.status(404).json({ error: "OFFERING_NOT_FOUND" });
     const buffer = await attendanceWorkbook(data);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -1222,7 +1454,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   }));
 
   app.get("/api/reports/offerings/:id.pdf", authenticate, roles("teacher", "admin"), asyncRoute(async (req, res) => {
-    const data = await reportData(req.params.id, req.user.organization_id, req.user.role === "teacher" ? req.user.id : null);
+    const data = await reportData(req.params.id, req.user.organization_id, req.user.role === "teacher" ? req.user.id : null, req.query.from || null, req.query.to || null);
     if (!data) return res.status(404).json({ error: "OFFERING_NOT_FOUND" });
     const buffer = await attendancePdf(data);
     res.setHeader("Content-Type", "application/pdf");
@@ -1444,7 +1676,10 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
         const email = cleanEmail(row.college_email || row.email);
         const rollNumber = cleanRoll(row.roll_number || row.rollNumber);
         const fullName = String(row.full_name || row.fullName || "").trim();
-        if (!email || !rollNumber || !fullName) throw new Error("full_name, college_email and roll_number are required");
+        const password = String(row.password || "");
+        if (!email || !rollNumber || !fullName || !password) throw new Error("full_name, college_email, roll_number and password are required");
+        const passwordError = passwordProblem(password);
+        if (passwordError) throw new Error(passwordError);
         const section = await db.query(
           `SELECT sc.id AS section_id, b.id AS branch_id, se.id AS semester_id
            FROM sections sc JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=sc.semester_id
@@ -1454,9 +1689,9 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
         if (!section.rowCount) throw new Error(`No section matches ${row.branch_code}/sem ${row.semester}/${row.section_name}`);
         await db.transaction(async (client) => {
           const user = await client.query(
-            `INSERT INTO users(organization_id,email,username,full_name,role,status) VALUES($1,$2,$3,$4,'student','active')
+            `INSERT INTO users(organization_id,email,username,full_name,role,status,password_hash,password_set_at) VALUES($1,$2,$3,$4,'student','active',$5,now())
              ON CONFLICT (organization_id,email) DO NOTHING RETURNING id`,
-            [req.user.organization_id, email, rollNumber, fullName]
+            [req.user.organization_id, email, rollNumber, fullName, hashPassword(password)]
           );
           if (!user.rowCount) { outcome.skipped += 1; return; }
           await client.query(
@@ -1474,6 +1709,151 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
         });
       } catch (error) {
         outcome.errors.push({ row: index + 1, message: error.message });
+      }
+    }
+    res.json(outcome);
+  }));
+
+  app.post("/api/admin/import/:entity", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const entity = req.params.entity;
+    const supported = ['teachers', 'subjects', 'courses', 'enrollments', 'timetables'];
+    if (!supported.includes(entity)) return res.status(404).json({ error: "UNKNOWN_IMPORT_TYPE" });
+    const rows = Array.isArray(req.body.rows) ? req.body.rows.slice(0, 1000) : [];
+    if (!rows.length) return res.status(400).json({ error: "NO_ROWS", message: "Choose a CSV containing at least one data row" });
+    const outcome = { created: 0, updated: 0, skipped: 0, errors: [] };
+
+    const resolveOffering = async (client, row) => {
+      const result = await client.query(
+        `SELECT o.id,o.subject_id,o.teacher_id,o.section_id,o.semester_id,o.default_room
+         FROM course_offerings o JOIN subjects su ON su.id=o.subject_id JOIN teachers t ON t.user_id=o.teacher_id
+         JOIN sections sc ON sc.id=o.section_id JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=o.semester_id
+         WHERE o.organization_id=$1 AND lower(su.code)=lower($2) AND lower(t.employee_code)=lower($3)
+           AND lower(b.code)=lower($4) AND se.number=$5 AND lower(sc.name)=lower($6)`,
+        [req.user.organization_id, row.subject_code, row.teacher_employee_code, row.branch_code, Number(row.semester), row.section_name]
+      );
+      if (!result.rowCount) throw new Error(`No course matches ${row.subject_code}/${row.teacher_employee_code}/${row.branch_code}/semester ${row.semester}/${row.section_name}`);
+      return result.rows[0];
+    };
+
+    for (const [index, row] of rows.entries()) {
+      try {
+        if (entity === 'teachers') {
+          const fullName = String(row.full_name || '').trim();
+          const email = cleanEmail(row.college_email || row.email);
+          const employeeCode = String(row.employee_code || '').trim().toUpperCase();
+          const password = String(row.password || '');
+          if (!fullName || !email || !employeeCode || !password) throw new Error('full_name, college_email, employee_code and password are required');
+          const passwordError = passwordProblem(password);
+          if (passwordError) throw new Error(passwordError);
+          await db.transaction(async (client) => {
+            const duplicate = await client.query(
+              `SELECT 1 FROM users u LEFT JOIN teachers t ON t.user_id=u.id
+               WHERE u.organization_id=$1 AND (lower(u.email)=lower($2) OR lower(t.employee_code)=lower($3))`,
+              [req.user.organization_id, email, employeeCode]
+            );
+            if (duplicate.rowCount) { outcome.skipped += 1; return; }
+            let branchId = null;
+            if (String(row.branch_code || '').trim()) {
+              const branch = await client.query("SELECT id FROM branches WHERE organization_id=$1 AND lower(code)=lower($2)", [req.user.organization_id, row.branch_code]);
+              if (!branch.rowCount) throw new Error(`Unknown branch code ${row.branch_code}`);
+              branchId = branch.rows[0].id;
+            }
+            const user = await client.query(
+              `INSERT INTO users(organization_id,email,username,full_name,role,status,password_hash,password_set_at)
+               VALUES($1,$2,$3,$4,'teacher','active',$5,now()) RETURNING id`,
+              [req.user.organization_id, email, cleanUsername(employeeCode), fullName, hashPassword(password)]
+            );
+            await client.query("INSERT INTO teachers(user_id,employee_code,branch_id,phone) VALUES($1,$2,$3,$4)", [user.rows[0].id, employeeCode, branchId, row.phone || null]);
+            await audit(client, req, "TEACHER_IMPORTED", "user", user.rows[0].id, null, { email, employeeCode });
+            outcome.created += 1;
+          });
+        } else if (entity === 'subjects') {
+          const code = String(row.subject_code || row.code || '').trim().toUpperCase();
+          const name = String(row.subject_name || row.name || '').trim();
+          const credits = row.credits === '' || row.credits === undefined ? 0 : Number(row.credits);
+          if (!code || !name || !Number.isFinite(credits) || credits < 0) throw new Error('subject_code, subject_name and a valid non-negative credits value are required');
+          await db.transaction(async (client) => {
+            const before = await client.query("SELECT * FROM subjects WHERE organization_id=$1 AND lower(code)=lower($2)", [req.user.organization_id, code]);
+            const saved = await client.query(
+              `INSERT INTO subjects(organization_id,code,name,credits,active) VALUES($1,$2,$3,$4,true)
+               ON CONFLICT(organization_id,code) DO UPDATE SET name=EXCLUDED.name,credits=EXCLUDED.credits,active=true RETURNING *`,
+              [req.user.organization_id, code, name, credits]
+            );
+            await audit(client, req, before.rowCount ? "SUBJECT_IMPORTED_UPDATE" : "SUBJECT_IMPORTED", "subject", saved.rows[0].id, before.rows[0] || null, saved.rows[0]);
+            if (before.rowCount) outcome.updated += 1; else outcome.created += 1;
+          });
+        } else if (entity === 'courses') {
+          const requiredColumns = ['subject_code', 'teacher_employee_code', 'branch_code', 'semester', 'section_name', 'default_room'];
+          if (requiredColumns.some(key => !String(row[key] || '').trim())) throw new Error(`${requiredColumns.join(', ')} are required`);
+          await db.transaction(async (client) => {
+            const assignment = await client.query(
+              `SELECT su.id AS subject_id,t.user_id AS teacher_id,sc.id AS section_id,se.id AS semester_id
+               FROM subjects su CROSS JOIN teachers t JOIN users tu ON tu.id=t.user_id
+               CROSS JOIN sections sc JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=sc.semester_id
+               WHERE su.organization_id=$1 AND tu.organization_id=$1 AND b.organization_id=$1 AND se.organization_id=$1
+                 AND lower(su.code)=lower($2) AND lower(t.employee_code)=lower($3) AND lower(b.code)=lower($4)
+                 AND se.number=$5 AND lower(sc.name)=lower($6)`,
+              [req.user.organization_id, row.subject_code, row.teacher_employee_code, row.branch_code, Number(row.semester), row.section_name]
+            );
+            if (!assignment.rowCount) throw new Error('Subject, teacher, branch, semester or section could not be matched');
+            const a = assignment.rows[0];
+            const before = await client.query(
+              "SELECT * FROM course_offerings WHERE subject_id=$1 AND teacher_id=$2 AND section_id=$3 AND semester_id=$4",
+              [a.subject_id, a.teacher_id, a.section_id, a.semester_id]
+            );
+            const saved = await client.query(
+              `INSERT INTO course_offerings(organization_id,subject_id,teacher_id,section_id,semester_id,default_room,active)
+               VALUES($1,$2,$3,$4,$5,$6,true)
+               ON CONFLICT(subject_id,teacher_id,section_id,semester_id) DO UPDATE SET default_room=EXCLUDED.default_room,active=true RETURNING *`,
+              [req.user.organization_id, a.subject_id, a.teacher_id, a.section_id, a.semester_id, cleanRoom(row.default_room)]
+            );
+            await audit(client, req, before.rowCount ? "COURSE_IMPORTED_UPDATE" : "COURSE_IMPORTED", "course_offering", saved.rows[0].id, before.rows[0] || null, saved.rows[0]);
+            if (before.rowCount) outcome.updated += 1; else outcome.created += 1;
+          });
+        } else if (entity === 'enrollments') {
+          if (!String(row.student_roll_number || row.roll_number || '').trim()) throw new Error('student_roll_number is required');
+          await db.transaction(async (client) => {
+            const offering = await resolveOffering(client, row);
+            const student = await client.query(
+              `SELECT s.user_id FROM students s JOIN users u ON u.id=s.user_id
+               WHERE u.organization_id=$1 AND lower(s.roll_number)=lower($2) AND u.status='active'`,
+              [req.user.organization_id, row.student_roll_number || row.roll_number]
+            );
+            if (!student.rowCount) throw new Error(`Unknown student roll number ${row.student_roll_number || row.roll_number}`);
+            const saved = await client.query(
+              `INSERT INTO student_enrollments(offering_id,student_id) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING *`,
+              [offering.id, student.rows[0].user_id]
+            );
+            if (!saved.rowCount) { outcome.skipped += 1; return; }
+            await audit(client, req, "ENROLLMENT_IMPORTED", "course_offering", offering.id, null, { studentId: student.rows[0].user_id });
+            outcome.created += 1;
+          });
+        } else if (entity === 'timetables') {
+          await db.transaction(async (client) => {
+            const offering = await resolveOffering(client, row);
+            const dayNames = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+            const rawDay = String(row.day_of_week || row.day || '').trim().toLowerCase();
+            const dayOfWeek = /^\d+$/.test(rawDay) ? Number(rawDay) : dayNames.indexOf(rawDay) + 1;
+            const entry = {
+              offeringId: offering.id, dayOfWeek, startsAt: row.starts_at, endsAt: row.ends_at,
+              room: cleanRoom(row.room || offering.default_room), validFrom: row.valid_from, validUntil: row.valid_until
+            };
+            const validationError = validateTimetableInput(entry);
+            if (validationError) throw new Error(validationError.replaceAll('_', ' ').toLowerCase());
+            await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`timetable:${req.user.organization_id}:${dayOfWeek}`]);
+            const conflict = await timetableConflict(client, { organizationId: req.user.organization_id, ...entry });
+            if (conflict) throw new Error(`Conflicts with ${conflict.subject} (${conflict.conflict_type})`);
+            const saved = await client.query(
+              `INSERT INTO timetable_entries(offering_id,day_of_week,starts_at,ends_at,room,valid_from,valid_until)
+               VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+              [offering.id, dayOfWeek, entry.startsAt, entry.endsAt, entry.room, entry.validFrom, entry.validUntil]
+            );
+            await audit(client, req, "TIMETABLE_IMPORTED", "timetable_entry", saved.rows[0].id, null, saved.rows[0]);
+            outcome.created += 1;
+          });
+        }
+      } catch (error) {
+        outcome.errors.push({ row: index + 2, message: error.message });
       }
     }
     res.json(outcome);

@@ -27,6 +27,25 @@ class ApiClient(private val baseUrl: String) {
         post("/api/auth/request-otp", JSONObject().put("email", email), authenticated = false)
             .optString("developmentOtp").takeIf { it.isNotBlank() }
 
+    fun studentPasswordLogin(
+        fullName: String,
+        rollNumber: String,
+        password: String,
+        installationId: String,
+        deviceName: String
+    ): LoginResult {
+        val response = post("/api/auth/student-login", JSONObject().apply {
+            put("fullName", fullName)
+            put("rollNumber", rollNumber)
+            put("password", password)
+            put("clientType", "mobile")
+            put("installationId", installationId)
+            put("deviceName", deviceName)
+            put("platform", "android")
+        }, authenticated = false)
+        return readLoginResult(response)
+    }
+
     fun verifyOtp(email: String, code: String, installationId: String, deviceName: String): LoginResult {
         val response = post("/api/auth/verify-otp", JSONObject().apply {
             put("email", email)
@@ -36,6 +55,18 @@ class ApiClient(private val baseUrl: String) {
             put("deviceName", deviceName)
             put("platform", "android")
         }, authenticated = false)
+        return readLoginResult(response)
+    }
+
+    fun requestDeviceChange(installationId: String, deviceName: String, reason: String, verificationToken: String) {
+        post("/api/auth/device-change-request", JSONObject().apply {
+            put("installationId", installationId)
+            put("deviceName", deviceName)
+            put("reason", reason)
+        }, bearerOverride = verificationToken)
+    }
+
+    private fun readLoginResult(response: JSONObject): LoginResult {
         val result = LoginResult(
             accessToken = response.getString("accessToken"),
             refreshToken = response.getString("refreshToken"),
@@ -45,15 +76,6 @@ class ApiClient(private val baseUrl: String) {
         )
         setSession(result.accessToken, result.refreshToken)
         return result
-    }
-
-    fun requestDeviceChange(email: String, installationId: String, deviceName: String, reason: String, verificationToken: String) {
-        post("/api/auth/device-change-request", JSONObject().apply {
-            put("email", email)
-            put("installationId", installationId)
-            put("deviceName", deviceName)
-            put("reason", reason)
-        }, bearerOverride = verificationToken)
     }
 
     fun studentDashboard(): StudentDashboard {

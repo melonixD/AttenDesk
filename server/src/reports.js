@@ -17,7 +17,7 @@ export async function attendanceWorkbook({ offering, rows, threshold }) {
   sheet.getCell("A3").value = "Generated";
   sheet.getCell("B3").value = new Date();
   sheet.getCell("D3").value = "Threshold";
-  sheet.getCell("E3").value = `${threshold}%`;
+  sheet.getCell("E3").value = `${threshold}%${offering.date_from || offering.date_to ? ` · ${offering.date_from || 'Start'} to ${offering.date_to || 'Today'}` : ''}`;
 
   sheet.getRow(4).values = ["Roll number", "Student", "Attended", "Conducted", "Percentage", "Status"];
   sheet.getRow(4).font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -48,6 +48,7 @@ export async function attendancePdf({ offering, rows, threshold }) {
   doc.moveDown(0.35).fillColor("#71807b").fontSize(10).font("Helvetica")
     .text(`${offering.subject_name} (${offering.subject_code}) · ${offering.branch_name} · Section ${offering.section_name}`);
   doc.text(`Generated ${new Date().toLocaleString("en-IN")} · Defaulter threshold ${threshold}%`);
+  if (offering.date_from || offering.date_to) doc.text(`Report period: ${offering.date_from || 'Beginning'} to ${offering.date_to || 'Today'}`);
   doc.moveDown(1.2);
 
   const x = [42, 118, 296, 358, 420, 485];

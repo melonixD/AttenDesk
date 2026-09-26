@@ -20,7 +20,7 @@ Set `SEED_ADMIN_PASSWORD` and `SEED_TEACHER_PASSWORD` before `npm run seed:hbtu`
 
 The `melonix`, `babatillu` and `alakh` usernames exist only after seeding. Normal migration alone creates only your configured initial administrator. The password is the value you supplied, not the variable name. Prefer full email if multiple colleges exist in the database.
 
-Students with an assigned password must enter it in the new student password field. Name plus roll number alone is suitable only for a supervised pilot, not secure identity verification. Configure OTP or assigned student passwords before real deployment. Registered-browser IDs are not hardware-bound and cannot guarantee one physical phone per person.
+Students with an assigned password enter their full registered name, roll number and password. The Android app now uses this password flow by default and keeps college-email OTP as an optional fallback. Name plus roll number alone is suitable only for a supervised pilot, not secure identity verification. Registered-browser IDs are not hardware-bound and cannot guarantee one physical phone per person.
 
 ## 3. Vercel
 
@@ -33,10 +33,12 @@ If login still fails, send the deployed URL, selected role and exact error text/
 The dashboard now includes a first-time setup checklist. Complete it in this order:
 
 1. **Academic setup:** create a branch, semester, section and subject.
-2. **People:** create teachers and students directly, or import students from the downloadable CSV template. Teacher employee codes become their usernames. Student barcodes and initial passwords can be assigned during creation.
-3. **Courses:** assign a subject to a teacher and section, then enroll students. Open a course roster to remove an incorrect enrollment.
-4. **Timetable:** add class periods after the course exists.
-5. **Rooms & beacons:** register the classroom, then provision its ESP32.
+2. **Bulk import:** use the dedicated import centre for students, teachers, subjects, courses, enrollments and timetable periods. Download each exact template and import them in the order shown. Student and teacher templates require an initial password. Each failed CSV row is reported by row number without hiding successful rows.
+3. **People:** create teachers and students directly when you do not need a bulk import. Teacher employee codes become their usernames. Student barcodes and initial passwords can be assigned during creation.
+4. **Courses:** assign a subject to a teacher and section, then enroll students. Existing branches, subjects, semesters, sections, courses and timetable periods now have Edit actions.
+5. **Timetable:** add class periods after the course exists. Both manual and CSV creation apply the same teacher, section and room conflict checks.
+6. **Corrections:** after a session closes, open **Corrections**, filter by branch/semester/section/subject/date, open the roster and record a reason for every change. Student appeals appear in the same queue and every decision is audited.
+7. **Rooms & beacons:** register the classroom, then provision its ESP32.
 
 Students and teachers may still request their own accounts, but self-registration is no longer required to make a fresh installation usable. Administrators can also reset passwords from **People**; resetting a password revokes that user's existing sessions.
 
@@ -55,7 +57,9 @@ The internal 30-second code is exchanged automatically over Bluetooth; nobody ty
 
 ## Verification and limits
 
-Run `npm test` from the root. Tests include simulated browser login interactions and API/security regression tests using stub databases. They do not prove real PostgreSQL migrations, deployed Vercel configuration, ESP32 compilation, physical BLE reception or 60 simultaneous students. Those require a staging database and physical pilot.
+After updating an existing deployment, run `npm run migrate` again so migration `006_admin_workflows_and_appeals.sql` creates the appeals table and correction indexes. Then redeploy Vercel. The migration runner is idempotent and records checksums, so already-applied migrations are skipped.
+
+Run `npm test` from the root. Tests include simulated browser admin workflows, login interactions and API/security regression tests using stub databases. They do not prove real PostgreSQL migrations, deployed Vercel configuration, ESP32 compilation, physical BLE reception or 60 simultaneous students. Those require a staging database and physical pilot.
 
 Test one teacher and two students first, then adjacent rooms, then a 60-student session. BLE crosses walls; rotating tokens can still be relayed within their validity window (current and previous 30-second windows are accepted). This is not cheat-proof classroom-location verification.
 

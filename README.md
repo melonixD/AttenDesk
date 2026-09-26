@@ -74,7 +74,9 @@ why the student sign-in is the weakest link and how to close it.
 ## What is real and what is not
 
 **Real:** PostgreSQL persistence, scrypt passwords, OTP email login, admin
-approval workflows, academic and timetable management with conflict rejection,
+approval workflows, six CSV bulk-import workflows, editable academic/course/timetable records,
+post-session corrections with audit history, student appeals, filtered reports,
+academic and timetable management with conflict rejection,
 ESP32 beacon provisioning and health, rotating-code attendance verification,
 live teacher roster, manual override with audit trail, explicit absent records
 on close, Excel/PDF exports, below-threshold reports, one-device-per-student
@@ -103,7 +105,7 @@ collect RSSI.
 npm test
 ```
 
-21 tests covering token integrity, password hashing, beacon-code rotation and
+32 tests covering token integrity, password hashing, beacon-code rotation and
 expiry, route authorisation, the beacon protocol's information boundary, CSP
-compliance and the Vercel routing contract. They run against stub data — run
+compliance, admin workflow rendering and the Vercel routing contract. They run against stub data — run
 `npm run migrate` against a real PostgreSQL to validate the SQL.

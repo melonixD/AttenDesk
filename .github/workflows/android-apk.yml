@@ -58,7 +58,7 @@ jobs:
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: AttenDesk-student-v1.1.0
+          name: AttenDesk-student-v1.2.0
           path: |
             android/dist/AttenDesk-student.apk
             android/dist/AttenDesk-student.apk.sha256

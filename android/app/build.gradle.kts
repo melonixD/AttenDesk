@@ -11,8 +11,8 @@ android {
         applicationId = "in.attendesk.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.0"
 
         val attenDeskApi = providers.gradleProperty("ATTENDESK_API_URL").orElse("https://atten-desk.vercel.app")
         buildConfigField("String", "API_BASE_URL", "\"${attenDeskApi.get()}\"")

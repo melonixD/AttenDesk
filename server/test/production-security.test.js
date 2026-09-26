@@ -20,6 +20,7 @@ test("OTP and barcode hashes are scoped and do not reveal raw values", () => {
 
 test("production schema and API contain the required persistent controls", async () => {
   const schema = await fs.readFile(new URL("../migrations/001_production_schema.sql", import.meta.url), "utf8");
+  const workflowSchema = await fs.readFile(new URL("../migrations/006_admin_workflows_and_appeals.sql", import.meta.url), "utf8");
   const api = await fs.readFile(new URL("../src/production-app.js", import.meta.url), "utf8");
   const migrationRunner = await fs.readFile(new URL("../scripts/migrate.js", import.meta.url), "utf8");
   for (const table of ["users", "registration_requests", "otp_challenges", "student_devices", "device_change_requests", "course_offerings", "timetable_entries", "barcode_registrations", "attendance_sessions", "attendance_records", "audit_logs", "backup_runs"]) {
@@ -27,7 +28,9 @@ test("production schema and API contain the required persistent controls", async
   }
   assert.match(schema, /UNIQUE \(session_id, student_id\)/);
   assert.match(schema, /one_active_device_per_student/);
-  for (const route of ["/api/auth/register", "/api/admin/sections", "/api/admin/offerings", "/api/admin/timetable", "/api/admin/users/:id/status", "/api/student/dashboard", "/api/student/history", ".xlsx", ".pdf"]) {
+  assert.match(workflowSchema, /CREATE TABLE IF NOT EXISTS attendance_appeals/);
+  assert.match(workflowSchema, /one_pending_appeal_per_record/);
+  for (const route of ["/api/auth/register", "/api/admin/sections", "/api/admin/offerings", "/api/admin/timetable", "/api/admin/users/:id/status", "/api/admin/import/:entity", "/api/admin/attendance/sessions", "/api/admin/attendance/appeals", "/api/student/dashboard", "/api/student/history", "/api/student/attendance/:recordId/appeals", ".xlsx", ".pdf"]) {
     assert.ok(api.includes(route), `missing ${route}`);
   }
   assert.match(api, /TIMETABLE_CONFLICT/);

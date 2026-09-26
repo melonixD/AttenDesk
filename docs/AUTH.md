@@ -50,6 +50,8 @@ records anybody's degree depends on.
 
 ## Email OTP — fallback
 
+The Android student app uses the password assigned by an administrator as its primary sign-in method. Mobile password login requires the student's registered full name, roll number, assigned password and installation ID. Accounts without a stored password are refused on mobile until an administrator sets one from **People**. Email OTP remains available as a fallback when production email delivery is configured.
+
 The original passwordless flow is intact at `/api/auth/request-otp`. Codes are
 six digits, hashed with a keyed HMAC, valid ten minutes, single use, five
 attempts. It needs `RESEND_API_KEY` and a verified sending domain. Useful if

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { after, before, test } from "node:test";
 import { createProductionApp } from "../src/production-app.js";
-import { issueAccessToken } from "../src/security.js";
+import { hashPassword, issueAccessToken } from "../src/security.js";
 
 const AUTH_SECRET = "test-auth-secret-that-is-longer-than-32-characters";
 const ORG_ID = "00000000-0000-4000-8000-000000000001";
@@ -55,9 +55,9 @@ after(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-async function request(path, token, body) {
+async function request(path, token, body, method = "POST") {
   const response = await fetch(`${baseUrl}${path}`, {
-    method: "POST",
+    method,
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
@@ -115,4 +115,78 @@ test("overlapping timetable room allocation is rejected", async () => {
   });
   assert.equal(result.status, 409);
   assert.equal(result.body.error, "TIMETABLE_CONFLICT");
+});
+
+test("mobile student login requires and verifies an assigned password", async () => {
+  const mobileUser = {
+    id: STUDENT_ID,
+    organization_id: ORG_ID,
+    email: "student@college.edu",
+    username: null,
+    full_name: "Test Student",
+    role: "student",
+    status: "active",
+    password_hash: null
+  };
+  const mobileDb = {
+    async query(sql) {
+      if (sql.includes("FROM students s JOIN users u")) return { rowCount: 1, rows: [mobileUser] };
+      if (sql.includes("FROM student_devices")) return { rowCount: 0, rows: [] };
+      if (sql.startsWith("INSERT INTO student_devices")) return { rowCount: 1, rows: [] };
+      if (sql.startsWith("UPDATE student_devices")) return { rowCount: 1, rows: [] };
+      if (sql.startsWith("INSERT INTO refresh_tokens")) return { rowCount: 1, rows: [] };
+      if (sql.startsWith("UPDATE users SET last_login_at")) return { rowCount: 1, rows: [] };
+      throw new Error(`Unexpected mobile-login query: ${sql}`);
+    },
+    async transaction(work) { return work(this); }
+  };
+  const instance = http.createServer(createProductionApp({ db: mobileDb, mailer: { sendOtp: async () => ({}) } }));
+  await new Promise(resolve => instance.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${instance.address().port}/api/auth/student-login`;
+  const signIn = async (password) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullName: "Test Student", rollNumber: "250107010", password, clientType: "mobile", installationId: "phone-a", deviceName: "Test Android", platform: "android" })
+    });
+    return { status: response.status, body: await response.json() };
+  };
+  try {
+    const missing = await signIn("StudentPass99");
+    assert.equal(missing.status, 403);
+    assert.equal(missing.body.error, "PASSWORD_NOT_SET");
+
+    mobileUser.password_hash = hashPassword("StudentPass99");
+    const wrong = await signIn("WrongPass99");
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.body.error, "INVALID_CREDENTIALS");
+
+    const correct = await signIn("StudentPass99");
+    assert.equal(correct.status, 200);
+    assert.equal(correct.body.user.role, "student");
+    assert.ok(correct.body.accessToken);
+  } finally {
+    await new Promise(resolve => instance.close(resolve));
+  }
+});
+
+test("post-session corrections require an audit reason", async () => {
+  const token = issueAccessToken(AUTH_SECRET, { sub: ADMIN_ID, org: ORG_ID, role: "admin", clientType: "web" });
+  const result = await request(`/api/admin/attendance/sessions/session-1/students/${STUDENT_ID}`, token, { status: "present", reason: "" }, "PATCH");
+  assert.equal(result.status, 400);
+  assert.equal(result.body.error, "REASON_REQUIRED");
+});
+
+test("student attendance appeals require an explanation", async () => {
+  const token = issueAccessToken(AUTH_SECRET, { sub: STUDENT_ID, org: ORG_ID, role: "student", clientType: "web" });
+  const result = await request("/api/student/attendance/record-1/appeals", token, { requestedStatus: "present", reason: "" });
+  assert.equal(result.status, 400);
+  assert.equal(result.body.error, "REASON_REQUIRED");
+});
+
+test("bulk import rejects empty CSV payloads", async () => {
+  const token = issueAccessToken(AUTH_SECRET, { sub: ADMIN_ID, org: ORG_ID, role: "admin", clientType: "web" });
+  const result = await request("/api/admin/import/teachers", token, { rows: [] });
+  assert.equal(result.status, 400);
+  assert.equal(result.body.error, "NO_ROWS");
 });
