@@ -37,7 +37,7 @@ index.js          the same app for Docker / local
 public/           vanilla-JS PWA: admin, teacher and student
 server/           Express API, PostgreSQL migrations, reports, backup scripts
 firmware/         ESP32 beacon sketch + wiring and calibration notes
-android/          native Kotlin app (teacher + student), optional
+android/          native Kotlin student app (passive ESP32 BLE scanner)
 docs/             deployment, architecture, auth, security, pilot checklist
 ```
 

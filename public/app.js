@@ -219,7 +219,10 @@ function animateMetricValues(root) {
 
 function bindInteractiveDepth(root = document) {
   if (motionPreference.matches || !finePointer.matches) return;
-  $$('.metric, .panel, .action-card, .workspace-chip, .signal-art', root).forEach(surface => {
+  // Keep cursor-reactive depth on compact decorative cards only. Applying a
+  // perspective transform to forms and data tables makes text move beneath the
+  // pointer and can cause the cursor to flicker between text and default modes.
+  $$('.metric, .action-card, .workspace-chip, .signal-art', root).forEach(surface => {
     if (surface.dataset.depthBound) return;
     surface.dataset.depthBound = 'true';
     surface.classList.add('depth-surface');
@@ -337,6 +340,7 @@ function setLoginMode(mode) {
   state.loginMode = mode;
   $$('[data-login-mode]').forEach(tab => tab.classList.toggle('active', tab.dataset.loginMode === mode));
   $('#student-login-form').classList.toggle('hidden', mode !== 'student');
+  $('#student-app-download-panel').classList.toggle('hidden', mode !== 'student');
   $('#staff-login-form').classList.toggle('hidden', mode === 'student');
   $('#request-otp-form').classList.add('hidden');
   $('#verify-otp-form').classList.add('hidden');
@@ -356,6 +360,32 @@ function storeSession(result) {
 }
 
 $$('[data-login-mode]').forEach(tab => tab.addEventListener('click', () => setLoginMode(tab.dataset.loginMode)));
+
+$('#android-app-download').addEventListener('click', async event => {
+  event.preventDefault();
+  const link = event.currentTarget;
+  if (link.getAttribute('aria-disabled') === 'true') return;
+  const originalContent = link.innerHTML;
+  link.setAttribute('aria-disabled', 'true');
+  link.innerHTML = '<span class="button-spinner" aria-hidden="true"></span>Preparing download…';
+  try {
+    const response = await fetch(link.href, { method: 'HEAD', cache: 'no-store' });
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok || contentType.includes('text/html')) throw new Error('APK_NOT_PUBLISHED');
+    const download = document.createElement('a');
+    download.href = link.href;
+    download.download = 'AttenDesk-student.apk';
+    document.body.appendChild(download);
+    download.click();
+    download.remove();
+    toast('AttenDesk download started');
+  } catch {
+    toast('The Android app is being prepared. Please try again after the next deployment.');
+  } finally {
+    link.removeAttribute('aria-disabled');
+    link.innerHTML = originalContent;
+  }
+});
 
 $('#student-login-form').addEventListener('submit', async event => {
   event.preventDefault();

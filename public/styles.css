@@ -354,8 +354,8 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
 .metric.dark .metric-top > i { background: rgba(255,255,255,.14); color: white; }
 .metric.dark small { color: #dbeafe; }
 
-.panel { margin-bottom: 15px; padding: 21px; transition: border-color .2s ease, box-shadow .4s var(--ease-fluid), transform .4s var(--ease-fluid); }
-.panel:hover { border-color: #d6e2f0; box-shadow: 0 12px 30px rgba(15,23,42,.055); transform: translateY(-1px); }
+.panel { margin-bottom: 15px; padding: 21px; transition: border-color .2s ease, box-shadow .4s var(--ease-fluid); }
+.panel:hover { border-color: #d6e2f0; box-shadow: 0 12px 30px rgba(15,23,42,.055); }
 .panel-header { margin-bottom: 17px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .panel-header h2 { margin: 5px 0 0; font-size: 20px; line-height: 1.15; letter-spacing: -.03em; }
 .pill { min-height: 26px; padding: 6px 10px; border-radius: 999px; background: var(--primary-soft); color: var(--primary-hover); display: inline-flex; align-items: center; justify-content: center; font-size: 9px; line-height: 1; font-weight: 700; white-space: nowrap; }
@@ -367,10 +367,10 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
 .data-table th { position: sticky; top: 0; z-index: 1; padding: 10px 11px; border-block: 1px solid var(--line-soft); background: var(--canvas); color: var(--muted); text-align: left; font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
 .data-table th:first-child { border-left: 1px solid var(--line-soft); border-radius: 8px 0 0 8px; }
 .data-table th:last-child { border-right: 1px solid var(--line-soft); border-radius: 0 8px 8px 0; }
+.data-table th, .data-table td { cursor: default; }
 .data-table td { padding: 12px 11px; border-bottom: 1px solid var(--line-soft); font-size: 11px; vertical-align: middle; }
-.data-table tbody tr { transition: background .2s ease, transform .3s var(--ease-fluid); }
+.data-table tbody tr { transition: background .2s ease; }
 .data-table tbody tr:hover { background: #f8fbff; }
-.data-table tbody tr:hover { transform: translateX(2px); }
 .data-table tr:last-child td { border-bottom: 0; }
 .data-table small { color: var(--muted); }
 .person { display: flex; align-items: center; gap: 10px; }
@@ -599,6 +599,12 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
 .role-tab:hover:not(.active) { color: #0f172a; }
 
 .field-note { margin: 12px 0 0; font-size: .78rem; line-height: 1.5; color: #64748b; }
+.student-app-download { display: grid; grid-template-columns: 42px 1fr; gap: 3px 12px; align-items: center; margin: 0 0 20px; padding: 14px; border: 1px solid var(--primary-line); border-radius: 14px; background: linear-gradient(135deg, #eff6ff, #f8fbff); }
+.student-app-icon { grid-row: 1; width: 42px; height: 42px; border-radius: 12px; background: var(--primary); color: white; display: grid; place-items: center; font-size: 17px; font-weight: 800; box-shadow: 0 8px 20px rgba(37,99,235,.2); }
+.student-app-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.student-app-copy strong { color: var(--ink); font-size: .82rem; line-height: 1.25; }
+.student-app-copy small { color: var(--muted); font-size: .69rem; line-height: 1.4; }
+.student-app-download-button { grid-column: 1 / -1; min-height: 42px; margin-top: 9px; padding: 9px 13px; text-decoration: none; font-size: .79rem; }
 .field-label { display: block; margin: 16px 0 8px; font-size: .8rem; font-weight: 600; color: #475569; }
 .stacked-actions { display: grid; gap: 10px; margin-top: 20px; }
 .key-block { padding: 14px; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

@@ -38,12 +38,13 @@ test("production schema and API contain the required persistent controls", async
 });
 
 test("production UI includes resilient loading and accessibility states", async () => {
-  const [webApp, styles, html, android, bleManager, webBluetoothMigration, demoApp, demoStyles, demoHtml] = await Promise.all([
+  const [webApp, styles, html, android, bleManager, androidManifest, webBluetoothMigration, demoApp, demoStyles, demoHtml] = await Promise.all([
     fs.readFile(new URL("../../public/app.js", import.meta.url), "utf8"),
     fs.readFile(new URL("../../public/styles.css", import.meta.url), "utf8"),
     fs.readFile(new URL("../../public/index.html", import.meta.url), "utf8"),
     fs.readFile(new URL("../../android/app/src/main/java/in/attendesk/app/MainActivity.kt", import.meta.url), "utf8"),
     fs.readFile(new URL("../../android/app/src/main/java/in/attendesk/app/BleSessionManager.kt", import.meta.url), "utf8"),
+    fs.readFile(new URL("../../android/app/src/main/AndroidManifest.xml", import.meta.url), "utf8"),
     fs.readFile(new URL("../migrations/004_web_bluetooth.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../../public/demo/app.js", import.meta.url), "utf8"),
     fs.readFile(new URL("../../public/demo/styles.css", import.meta.url), "utf8"),
@@ -65,13 +66,19 @@ test("production UI includes resilient loading and accessibility states", async 
   assert.match(html, /class="auth-proof"/);
   assert.match(html, /class="motion-scene"/);
   assert.match(html, /name="theme-color" content="#2563eb"/);
+  assert.match(html, /id="android-app-download"/);
+  assert.match(html, /\/downloads\/AttenDesk-student\.apk/);
+  assert.match(webApp, /APK_NOT_PUBLISHED/);
   assert.match(android, /private fun loadingPanel/);
   assert.match(android, /private fun setAnimatedContent/);
   assert.match(android, /0xFF2563EB/);
+  assert.doesNotMatch(android, /Continue as teacher|showTeacher|startTeacher/);
   assert.match(webApp, /navigator\.bluetooth\.requestDevice/);
   assert.match(webApp, /BarcodeDetector/);
-  assert.match(bleManager, /BluetoothGattServer/);
-  assert.match(bleManager, /setConnectable\(true\)/);
+  assert.match(bleManager, /ScanFilter/);
+  assert.match(bleManager, /startScan\(filters, settings/);
+  assert.doesNotMatch(bleManager, /BluetoothGattServer|AdvertiseCallback|startTeacherBroadcast/);
+  assert.doesNotMatch(androidManifest, /BLUETOOTH_ADVERTISE|BLUETOOTH_CONNECT/);
   assert.match(webBluetoothMigration, /barcode_web_ble/);
   assert.match(demoApp, /startViewTransition/);
   assert.match(demoStyles, /\.depth-surface/);

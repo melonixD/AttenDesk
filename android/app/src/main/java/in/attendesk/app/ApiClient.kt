@@ -6,7 +6,6 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
-import java.time.Instant
 
 class ApiException(
     val statusCode: Int,
@@ -57,18 +56,6 @@ class ApiClient(private val baseUrl: String) {
         }, bearerOverride = verificationToken)
     }
 
-    fun teacherClasses(): List<ClassOffering> {
-        val array = getArray("/api/teacher/classes")
-        return (0 until array.length()).map { index ->
-            val item = array.getJSONObject(index)
-            ClassOffering(
-                id = item.getString("id"), subject = item.getString("subject"), code = item.getString("code"),
-                branch = item.getString("branch"), section = item.getString("section"), defaultRoom = item.getString("default_room"),
-                attendanceThreshold = item.getDouble("attendance_threshold")
-            )
-        }
-    }
-
     fun studentDashboard(): StudentDashboard {
         val item = get("/api/student/dashboard")
         val profile = item.optJSONObject("student") ?: JSONObject()
@@ -91,16 +78,8 @@ class ApiClient(private val baseUrl: String) {
         )
     }
 
-    fun startSession(offeringId: String, roomId: String, durationSeconds: Int): AttendanceSession =
-        post("/api/attendance/sessions", JSONObject().apply {
-            put("offeringId", offeringId); put("room", roomId); put("durationSeconds", durationSeconds)
-        }).toSession()
-
     fun resolveBeacon(beaconToken: String): AttendanceSession =
         get("/api/attendance/beacons/$beaconToken").toSession()
-
-    fun session(sessionId: String): AttendanceSession =
-        get("/api/attendance/sessions/$sessionId").toSession()
 
     fun markAttendance(sessionId: String, barcode: String, installationId: String, rssi: List<Int>, beaconToken: String) {
         post("/api/attendance/sessions/$sessionId/mark", JSONObject().apply {
@@ -112,38 +91,14 @@ class ApiClient(private val baseUrl: String) {
         })
     }
 
-    fun markManual(sessionId: String, studentId: String, reason: String) {
-        post("/api/attendance/sessions/$sessionId/manual", JSONObject().apply {
-            put("studentId", studentId); put("status", "present"); put("reason", reason)
-        })
-    }
-
-    fun closeSession(sessionId: String) {
-        post("/api/attendance/sessions/$sessionId/close", JSONObject())
-    }
-
     private fun JSONObject.toSession(): AttendanceSession {
-        val rosterJson = optJSONArray("roster") ?: JSONArray()
-        val roster = (0 until rosterJson.length()).map { index ->
-            rosterJson.getJSONObject(index).let { item ->
-                RosterStudent(
-                    id = item.getString("id"), name = item.getString("full_name"), rollNumber = item.getString("roll_number"),
-                    status = item.getString("status"), method = item.optString("method").takeIf { it.isNotBlank() && it != "null" }
-                )
-            }
-        }
-        val ends = optString("ends_at")
         return AttendanceSession(
-            id = getString("id"), beaconToken = optString("beaconToken"), subject = getString("subject"),
-            subjectCode = getString("subject_code"), branch = getString("branch"), section = getString("section"),
+            id = getString("id"), subject = getString("subject"), branch = getString("branch"), section = getString("section"),
             teacher = getString("teacher"), roomId = getString("room"),
-            endsAt = runCatching { Instant.parse(ends).toEpochMilli() }.getOrElse { System.currentTimeMillis() },
-            status = getString("status"), roster = roster
         )
     }
 
     private fun get(path: String): JSONObject = JSONObject(request(path, "GET", null))
-    private fun getArray(path: String): JSONArray = JSONArray(request(path, "GET", null))
     private fun post(path: String, body: JSONObject, authenticated: Boolean = true, bearerOverride: String? = null): JSONObject =
         JSONObject(request(path, "POST", body, authenticated, bearerOverride))
 

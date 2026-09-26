@@ -1,35 +1,12 @@
 package `in`.attendesk.app
 
-data class ClassOffering(
-    val id: String,
-    val subject: String,
-    val code: String,
-    val branch: String,
-    val section: String,
-    val defaultRoom: String,
-    val attendanceThreshold: Double
-)
-
-data class RosterStudent(
-    val id: String,
-    val name: String,
-    val rollNumber: String,
-    val status: String,
-    val method: String?
-)
-
 data class AttendanceSession(
     val id: String,
-    val beaconToken: String,
     val subject: String,
-    val subjectCode: String,
     val branch: String,
     val section: String,
     val teacher: String,
-    val roomId: String,
-    val endsAt: Long,
-    val status: String,
-    val roster: List<RosterStudent> = emptyList()
+    val roomId: String
 )
 
 data class NearbySignal(

@@ -21,26 +21,19 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
-import android.widget.Space
 import android.widget.TextView
 import android.widget.Toast
 import android.text.InputType
 import com.google.android.gms.mlkit.vision.codescanner.GmsBarcodeScanning
 import java.util.concurrent.Executors
-import kotlin.math.max
 
 class MainActivity : Activity() {
     private val api = ApiClient(BuildConfig.API_BASE_URL)
     private lateinit var ble: BleSessionManager
     private val io = Executors.newCachedThreadPool()
     private val main = Handler(Looper.getMainLooper())
-    private var currentSession: AttendanceSession? = null
-    private var timerRunnable: Runnable? = null
-    private var pollRunnable: Runnable? = null
-    private val nearbySignals = linkedMapOf<String, NearbySignal>()
     private val resolvedTokens = mutableSetOf<String>()
     private var signedInUser: AuthUser? = null
-    private var closingSession = false
     private val installationId: String by lazy {
         val preferences = getSharedPreferences("attendesk_secure", Context.MODE_PRIVATE)
         preferences.getString("installation_id", null) ?: java.util.UUID.randomUUID().toString().also {
@@ -53,37 +46,18 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         ble = BleSessionManager(this)
         if (!ble.hasPermissions()) requestPermissions(ble.requiredPermissions(), 104)
-        showRoleChooser()
+        showLogin()
     }
 
     override fun onDestroy() {
-        timerRunnable?.let(main::removeCallbacks)
-        pollRunnable?.let(main::removeCallbacks)
         ble.close()
         io.shutdownNow()
         super.onDestroy()
     }
 
-    private fun showRoleChooser() {
-        ble.close()
-        timerRunnable?.let(main::removeCallbacks)
-        pollRunnable?.let(main::removeCallbacks)
-        currentSession = null
-        closingSession = false
-        val content = column(22).apply {
-            setPadding(dp(22), dp(36), dp(22), dp(30))
-            addView(label("ATTENDESK", 13, GREEN, bold = true))
-            addView(label("One classroom.\nOne clear record.", 38, INK, bold = true).withMargins(top = 14))
-            addView(label("Phone-based Bluetooth attendance connected to each student's registered ID card.", 16, MUTED).withMargins(top = 12, bottom = 32))
-            addView(roleButton("Continue as teacher", "Sign in and start a timed class session", true) { showLogin("teacher") })
-            addView(roleButton("Continue as student", "Sign in, discover your class and scan your ID", false) { showLogin("student") }.withMargins(top = 14))
-            addView(space(22))
-            addView(label("REGISTERED DEVICE  ·  LIVE BARCODE  ·  TIMED BLE", 10, MUTED, bold = true).apply { gravity = Gravity.CENTER })
-        }
-        setAnimatedContent(scroll(content))
-    }
-
-    private fun showLogin(expectedRole: String, emailValue: String = "", codeSent: Boolean = false, developmentOtp: String? = null) {
+    private fun showLogin(emailValue: String = "", codeSent: Boolean = false, developmentOtp: String? = null) {
+        ble.stopStudentScan()
+        resolvedTokens.clear()
         val email = EditText(this).apply {
             hint = "name@college.edu"
             setText(emailValue)
@@ -102,47 +76,47 @@ class MainActivity : Activity() {
         }
         val content = column(14).apply {
             setPadding(dp(22), dp(36), dp(22), dp(30))
-            addView(label("COLLEGE EMAIL LOGIN", 11, GREEN_DARK, true))
-            addView(label("Continue as ${expectedRole.replaceFirstChar { it.uppercase() }}", 30, INK, true))
-            addView(label("We use a one-time code. Students can mark attendance only from their approved phone.", 14, MUTED))
+            addView(label("ATTENDESK · STUDENT", 11, GREEN_DARK, true))
+            addView(label("Sign in to your attendance", 30, INK, true))
+            addView(label("Use your college email. Attendance can only be marked from your approved phone after detecting the classroom ESP32.", 14, MUTED))
             addView(label("COLLEGE EMAIL", 10, MUTED, true).withMargins(top = 16))
             addView(email)
             if (codeSent) {
                 addView(label("VERIFICATION CODE", 10, MUTED, true).withMargins(top = 8))
                 addView(code)
-                addView(primaryButton("Verify and sign in") { verifyLogin(expectedRole, email.text.toString(), code.text.toString()) })
+                addView(primaryButton("Verify and sign in") { verifyLogin(email.text.toString(), code.text.toString()) })
                 addView(label("Code sent. It expires in 10 minutes.", 11, MUTED).apply { gravity = Gravity.CENTER_HORIZONTAL })
             } else {
-                addView(primaryButton("Email me a code") { requestLoginCode(expectedRole, email.text.toString()) }.withMargins(top = 8))
+                addView(primaryButton("Email me a code") { requestLoginCode(email.text.toString()) }.withMargins(top = 8))
             }
-            addView(outlineButton("Back") { showRoleChooser() }.withMargins(top = 10))
-            addView(label("New student or teacher? Register on the AttenDesk website, then wait for admin approval.", 11, MUTED).withMargins(top = 12))
+            addView(label("New student? Register on the AttenDesk website, then wait for administrator approval.", 11, MUTED).withMargins(top = 12))
         }
         setAnimatedContent(scroll(content))
     }
 
-    private fun requestLoginCode(expectedRole: String, email: String) {
+    private fun requestLoginCode(email: String) {
         if (!email.contains('@')) return toast("Enter your college email")
         showLoading("Sending your secure login code…")
         io.execute {
             runCatching { api.requestOtp(email.trim().lowercase()) }
-                .onSuccess { otp -> main.post { showLogin(expectedRole, email.trim().lowercase(), true, otp) } }
+                .onSuccess { otp -> main.post { showLogin(email.trim().lowercase(), true, otp) } }
                 .onFailure { error -> main.post { showNetworkError(error) } }
         }
     }
 
-    private fun verifyLogin(expectedRole: String, email: String, code: String) {
+    private fun verifyLogin(email: String, code: String) {
         if (code.length != 6) return toast("Enter the 6-digit code")
         showLoading("Verifying your account and device…")
         io.execute {
             runCatching { api.verifyOtp(email.trim().lowercase(), code, installationId, deviceName) }
                 .onSuccess { login ->
-                    if (login.user.role != expectedRole) {
-                        main.post { showError("Wrong account type", "This account is registered as ${login.user.role}.") }
+                    if (login.user.role != "student") {
+                        api.setSession(null, null)
+                        main.post { showError("Student account required", "The Android app is for students only. Teachers take attendance from the Attendesk website.") }
                         return@onSuccess
                     }
                     signedInUser = login.user
-                    main.post { if (login.user.role == "teacher") showTeacherLoading() else showStudentLoading() }
+                    main.post { showStudentLoading() }
                 }
                 .onFailure { error -> main.post {
                     if (error is ApiException && error.code == "DEVICE_CHANGE_REQUIRED" && error.deviceChangeToken != null) {
@@ -158,219 +132,16 @@ class MainActivity : Activity() {
             .setTitle("New phone detected")
             .setMessage("Your account is linked to another phone. Ask an administrator to approve this device: $deviceName")
             .setView(reason)
-            .setNegativeButton("Cancel") { _, _ -> showRoleChooser() }
+            .setNegativeButton("Cancel") { _, _ -> showLogin(emailValue = email) }
             .setPositiveButton("Request approval") { _, _ ->
                 val explanation = reason.text.toString().trim().ifBlank { "Phone replaced or reset" }
                 showLoading("Sending device approval request…")
                 io.execute {
                     runCatching { api.requestDeviceChange(email, installationId, deviceName, explanation, verificationToken) }
-                        .onSuccess { main.post { showSuccess("Request sent", "An administrator must approve this phone before you can mark attendance.") { showRoleChooser() } } }
+                        .onSuccess { main.post { showSuccess("Request sent", "An administrator must approve this phone before you can mark attendance.") { showLogin(emailValue = email) } } }
                         .onFailure { error -> main.post { showNetworkError(error) } }
                 }
             }.show()
-    }
-
-    private fun showTeacherLoading() {
-        showLoading("Preparing your classes…")
-        io.execute {
-            runCatching { api.teacherClasses() }
-                .onSuccess { classes -> main.post {
-                    if (classes.isEmpty()) showError("No classes assigned", "Ask an administrator to create a course offering for you.")
-                    else showTeacherDashboard(classes, classes.first())
-                } }
-                .onFailure { error -> main.post { showNetworkError(error) } }
-        }
-    }
-
-    private fun showTeacherDashboard(classes: List<ClassOffering>, offering: ClassOffering) {
-        var selectedMinutes = 3
-        val room = EditText(this).apply {
-            hint = "Room number"
-            setText(offering.defaultRoom)
-            setPadding(dp(14), dp(4), dp(14), dp(4))
-            background = shape(Color.WHITE, 12, LINE)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50))
-        }
-        val content = column(16).apply {
-            setPadding(dp(18), dp(24), dp(18), dp(30))
-            addView(topRow("Hello, ${signedInUser?.fullName ?: "Teacher"}.", "TEACHER DASHBOARD"))
-            addView(row(8).apply {
-                addView(metric(classes.size.toString().padStart(2, '0'), "Classes"), LinearLayout.LayoutParams(0, dp(110), 1f))
-                addView(metric("${formatPercent(offering.attendanceThreshold)}%", "Threshold"), LinearLayout.LayoutParams(0, dp(110), 1f))
-                addView(metric("BLE", "Method"), LinearLayout.LayoutParams(0, dp(110), 1f))
-            })
-            addView(card().apply {
-                addView(row().apply {
-                    addView(column(2).apply {
-                        addView(label("NEXT CLASS", 10, GREEN_DARK, true))
-                        addView(label(offering.subject, 25, INK, true))
-                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    })
-                    addView(chip("ROOM ${offering.defaultRoom}", PALE_GREEN, GREEN_DARK))
-                })
-                addView(label("${offering.code}  ·  ${offering.branch}  ·  Section ${offering.section}", 12, MUTED).withMargins(top = 8, bottom = 18))
-                addView(outlineButton("Choose another class") {
-                    AlertDialog.Builder(this@MainActivity).setTitle("Select class")
-                        .setItems(classes.map { "${it.code} · ${it.subject} · Room ${it.defaultRoom}" }.toTypedArray()) { _, which -> showTeacherDashboard(classes, classes[which]) }
-                        .show()
-                })
-                addView(label("CLASSROOM", 10, MUTED, true).withMargins(top = 12, bottom = 4))
-                addView(room)
-                addView(infoStrip("●  Teacher phone beacon ready", "Students will discover this session nearby"))
-                addView(label("ATTENDANCE WINDOW", 10, MUTED, true).withMargins(top = 20, bottom = 8))
-                val minuteRow = row(7)
-                val minuteButtons = mutableListOf<Button>()
-                listOf(1, 3, 5, 10).forEach { minutes ->
-                    minuteRow.addView(smallButton("$minutes min", minutes == 3) { clicked ->
-                        selectedMinutes = minutes
-                        minuteButtons.forEach { styleMiniButton(it, it == clicked) }
-                    }.also(minuteButtons::add), LinearLayout.LayoutParams(0, dp(43), 1f))
-                }
-                addView(minuteRow)
-                addView(primaryButton("Start Bluetooth attendance") {
-                    val selectedRoom = room.text.toString().trim()
-                    if (selectedRoom.isBlank()) toast("Enter the classroom number") else startTeacherSession(offering, selectedRoom, selectedMinutes)
-                }.withMargins(top = 18))
-            })
-            addView(infoStrip("Reports are stored centrally", "Open the AttenDesk website for Excel, PDF and below-${formatPercent(offering.attendanceThreshold)}% reports."))
-        }
-        setAnimatedContent(scroll(content))
-    }
-
-    private fun startTeacherSession(offering: ClassOffering, room: String, minutes: Int) {
-        showLoading("Opening Room $room…")
-        io.execute {
-            runCatching { api.startSession(offering.id, room, minutes * 60) }
-                .onSuccess { session ->
-                    currentSession = session
-                    ble.startTeacherBroadcast(session.beaconToken, session.roomId,
-                        onStarted = { main.post { showTeacherLive(session) } },
-                        onError = { message ->
-                            io.execute {
-                                val closed = runCatching { api.closeSession(session.id) }.isSuccess
-                                main.post {
-                                    val cleanup = if (closed) "The server session was closed." else "The server could not confirm closure; it will expire automatically at the original end time."
-                                    showError("Bluetooth broadcast failed", "$message\n\n$cleanup")
-                                }
-                            }
-                        }
-                    )
-                }
-                .onFailure { error -> main.post { showNetworkError(error) } }
-        }
-    }
-
-    private fun showTeacherLive(session: AttendanceSession) {
-        closingSession = false
-        val content = column(14).apply {
-            setPadding(dp(18), dp(24), dp(18), dp(30))
-            addView(topRow("${session.subject} · Room ${session.roomId}", "● LIVE ATTENDANCE"))
-            val timer = label("03:00", 36, INK, true).apply { gravity = Gravity.CENTER_HORIZONTAL }
-            addView(timer.withMargins(top = 12))
-            addView(label("remaining", 11, MUTED).apply { gravity = Gravity.CENTER_HORIZONTAL })
-            addView(card().apply {
-                addView(label("LIVE ROSTER", 10, GREEN_DARK, true))
-                tag = "roster-card"
-                renderRoster(this, session.roster)
-            }.withMargins(top = 12))
-            addView(outlineButton("End attendance") { closeTeacherSession() })
-        }
-        setAnimatedContent(scroll(content))
-        timerRunnable?.let(main::removeCallbacks)
-        timerRunnable = object : Runnable {
-            override fun run() {
-                val seconds = max(0, ((session.endsAt - System.currentTimeMillis()) / 1000).toInt())
-                timer.text = "%02d:%02d".format(seconds / 60, seconds % 60)
-                if (seconds > 0) main.postDelayed(this, 1000) else closeTeacherSession()
-            }
-        }.also(main::post)
-        pollTeacherSession()
-    }
-
-    private fun pollTeacherSession() {
-        val id = currentSession?.id ?: return
-        pollRunnable?.let(main::removeCallbacks)
-        pollRunnable = object : Runnable {
-            override fun run() {
-                io.execute {
-                    runCatching { api.session(id) }.onSuccess { latest ->
-                        currentSession = latest
-                        main.post {
-                            val root = findViewById<ViewGroup>(android.R.id.content)
-                            val roster = findTaggedView(root, "roster-card") as? LinearLayout
-                            roster?.let { renderRoster(it, latest.roster) }
-                        }
-                    }
-                }
-                main.postDelayed(this, 2000)
-            }
-        }.also(main::post)
-    }
-
-    private fun renderRoster(container: LinearLayout, roster: List<RosterStudent>) {
-        while (container.childCount > 1) container.removeViewAt(1)
-        val present = roster.count { it.status == "present" }
-        container.addView(label("$present present  ·  ${roster.size - present} waiting", 13, MUTED, true).withMargins(top = 8, bottom = 8))
-        roster.forEach { student ->
-            container.addView(row().apply {
-                setPadding(0, dp(10), 0, dp(10))
-                addView(initial(student.name))
-                addView(column(1).apply {
-                    addView(label(student.name, 13, INK, true))
-                    addView(label("${student.rollNumber}${student.method?.let { " · $it" } ?: ""}", 10, MUTED))
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) }
-                })
-                val marked = student.status == "present"
-                addView(smallButton(if (marked) "✓" else "+", marked) {
-                    if (!marked) showManualDialog(student)
-                }.apply { minimumWidth = dp(42) })
-            })
-        }
-    }
-
-    private fun showManualDialog(student: RosterStudent) {
-        val reasons = arrayOf("ID card forgotten", "Phone unavailable", "Bluetooth issue", "Approved by teacher")
-        AlertDialog.Builder(this)
-            .setTitle("Mark ${student.name} present?")
-            .setSingleChoiceItems(reasons, 0, null)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Confirm") { dialog, _ ->
-                val selected = (dialog as AlertDialog).listView.checkedItemPosition.coerceAtLeast(0)
-                val sessionId = currentSession?.id ?: return@setPositiveButton
-                io.execute {
-                    runCatching { api.markManual(sessionId, student.id, reasons[selected]) }
-                        .onSuccess { main.post { toast("Manual attendance recorded"); pollTeacherSession() } }
-                        .onFailure { error -> main.post { toast(error.message ?: "Manual attendance failed") } }
-                }
-            }
-            .show()
-    }
-
-    private fun closeTeacherSession() {
-        val id = currentSession?.id ?: return showRoleChooser()
-        if (closingSession) return
-        closingSession = true
-        timerRunnable?.let(main::removeCallbacks)
-        pollRunnable?.let(main::removeCallbacks)
-        ble.stopTeacherBroadcast()
-        showLoading("Closing attendance and saving the final roster…")
-        io.execute {
-            runCatching { api.closeSession(id) }
-                .onSuccess { main.post {
-                    currentSession = null
-                    closingSession = false
-                    showSuccess("Attendance saved", "The Bluetooth session is closed and the final roster is ready.") { showRoleChooser() }
-                } }
-                .onFailure { error -> main.post {
-                    closingSession = false
-                    AlertDialog.Builder(this)
-                        .setTitle("Attendance was not confirmed saved")
-                        .setMessage(error.message ?: "Check the connection and try again.")
-                        .setPositiveButton("Retry") { _, _ -> closeTeacherSession() }
-                        .setNegativeButton("Return to dashboard") { _, _ -> currentSession = null; showTeacherLoading() }
-                        .show()
-                } }
-        }
     }
 
     private fun showStudentLoading() {
@@ -404,7 +175,7 @@ class MainActivity : Activity() {
                     })
                     addView(chip("ᛒ ON", PALE_GREEN, GREEN_DARK))
                 })
-                addView(label("Looking for a teacher's AttenDesk…", 13, MUTED).apply { gravity = Gravity.CENTER }.withMargins(top = 55, bottom = 55))
+                addView(label("Listening for the classroom ESP32…", 13, MUTED).apply { gravity = Gravity.CENTER }.withMargins(top = 55, bottom = 55))
             }
             addView(nearbyCard)
             addView(label("SUBJECT-WISE RECORD", 10, GREEN_DARK, true).withMargins(top = 8))
@@ -414,10 +185,8 @@ class MainActivity : Activity() {
             if (dashboard.subjects.isEmpty()) addView(infoStrip("No subjects assigned", "Ask the administrator to enroll you in your courses."))
         }
         setAnimatedContent(scroll(content))
-        nearbySignals.clear()
         resolvedTokens.clear()
         ble.startStudentScan(onSignal = { signal ->
-            nearbySignals[signal.beaconToken] = signal
             if (signal.samples.size >= 3 && resolvedTokens.add(signal.beaconToken)) resolveNearbySession(signal)
         }, onError = { message -> main.post { showError("Bluetooth unavailable", message) } })
     }
@@ -431,7 +200,6 @@ class MainActivity : Activity() {
     }
 
     private fun renderNearbyBubble(session: AttendanceSession, signal: NearbySignal) {
-        currentSession = session
         val root = findViewById<ViewGroup>(android.R.id.content)
         val card = findTaggedView(root, "nearby-card") as? LinearLayout ?: return
         while (card.childCount > 1) card.removeViewAt(1)
@@ -472,7 +240,7 @@ class MainActivity : Activity() {
     private fun submitStudentAttendance(session: AttendanceSession, signal: NearbySignal, barcode: String) {
         showLoading("Verifying your ID and classroom…")
         io.execute {
-            runCatching { api.markAttendance(session.id, barcode, installationId, signal.samples, signal.token) }
+            runCatching { api.markAttendance(session.id, barcode, installationId, signal.samples, signal.beaconToken) }
                 .onSuccess {
                     ble.stopStudentScan()
                     main.post { showSuccess("You're marked present", "${session.subject} · Room ${session.roomId}\nBarcode + Bluetooth verified") { showStudentLoading() } }
@@ -507,7 +275,9 @@ class MainActivity : Activity() {
     )
 
     private fun showError(title: String, message: String) {
-        AlertDialog.Builder(this).setTitle(title).setMessage(message).setNegativeButton("Back") { _, _ -> showRoleChooser() }.show()
+        AlertDialog.Builder(this).setTitle(title).setMessage(message).setNegativeButton("Back") { _, _ ->
+            if (signedInUser?.role == "student") showStudentLoading() else showLogin()
+        }.show()
     }
 
     private fun showSuccess(title: String, message: String, done: () -> Unit) {
@@ -529,29 +299,15 @@ class MainActivity : Activity() {
             addView(label(title, 25, INK, true).withMargins(top = 5))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        addView(smallButton("Switch", false) { showRoleChooser() })
+        addView(smallButton("Sign out", false) { signOut() })
     }
 
-    private fun metricRow() = row(8).apply {
-        addView(metric("04", "Classes"), LinearLayout.LayoutParams(0, dp(110), 1f))
-        addView(metric("78.4%", "Average"), LinearLayout.LayoutParams(0, dp(110), 1f))
-        addView(metric("03", "Below 75%"), LinearLayout.LayoutParams(0, dp(110), 1f))
-    }
-
-    private fun metric(value: String, caption: String) = card(padding = 12).apply {
-        addView(label(caption, 10, MUTED, true))
-        addView(label(value, 21, INK, true).withMargins(top = 12))
-    }
-
-    private fun reportRow(name: String, roll: String, percentage: String) = row().apply {
-        setPadding(0, dp(11), 0, dp(11))
-        addView(initial(name))
-        addView(column(0).apply {
-            addView(label(name, 13, INK, true))
-            addView(label(roll, 10, MUTED))
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) }
-        })
-        addView(label(percentage, 14, WARNING, true))
+    private fun signOut() {
+        ble.stopStudentScan()
+        resolvedTokens.clear()
+        api.setSession(null, null)
+        signedInUser = null
+        showLogin()
     }
 
     private fun subjectCard(name: String, detail: String, percent: String, warning: Boolean = false) = card(padding = 16).apply {
@@ -564,18 +320,6 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(10) }
         })
         addView(label(percent, 15, if (warning) WARNING else GREEN_DARK, true))
-    }
-
-    private fun roleButton(title: String, subtitle: String, dark: Boolean, click: () -> Unit) = Button(this).apply {
-        text = "$title\n$subtitle                                      →"
-        textSize = 15f
-        isAllCaps = false
-        gravity = Gravity.START or Gravity.CENTER_VERTICAL
-        setPadding(dp(20), dp(8), dp(20), dp(8))
-        setTextColor(if (dark) Color.WHITE else INK)
-        background = shape(if (dark) DARK else Color.WHITE, 14, if (dark) DARK else LINE)
-        setOnClickListener { click() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(92))
     }
 
     private fun infoStrip(title: String, subtitle: String) = column(2).apply {
@@ -594,16 +338,6 @@ class MainActivity : Activity() {
         background = shape(GREEN, 12)
         setOnClickListener { click() }
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52))
-    }
-
-    private fun outlineButton(text: String, click: () -> Unit) = Button(this).apply {
-        this.text = text
-        textSize = 13f
-        isAllCaps = false
-        setTextColor(GREEN_DARK)
-        background = shape(Color.WHITE, 12, LINE)
-        setOnClickListener { click() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50))
     }
 
     private fun smallButton(text: String, selected: Boolean, click: (Button) -> Unit) = Button(this).apply {
@@ -707,8 +441,6 @@ class MainActivity : Activity() {
         if (bold) typeface = Typeface.DEFAULT_BOLD
         includeFontPadding = false
     }
-
-    private fun space(height: Int) = Space(this).apply { layoutParams = LinearLayout.LayoutParams(1, dp(height)) }
 
     private fun shape(fill: Int, radius: Int, stroke: Int? = null) = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE

@@ -2,23 +2,24 @@
 
 ## Components
 
-- Android teacher mode creates the session through HTTPS and broadcasts only its random 8-byte token as BLE service data.
-- Android student mode passively scans advertisements, collects RSSI samples, resolves eligible tokens through HTTPS and scans the printed ID barcode.
+- The teacher website creates and monitors attendance sessions through HTTPS.
+- One provisioned ESP32 per classroom polls the server and broadcasts only the current rotating 8-byte code as BLE service data.
+- The student-only Android app passively scans ESP32 advertisements, collects RSSI samples, resolves eligible tokens through HTTPS and scans the printed ID barcode.
 - The Express API is the authority for timers, roles, rosters, devices, barcodes and attendance.
 - PostgreSQL stores academic configuration, identities, login challenges, course rosters, sessions, attendance and audit events.
 - The website uses the same role-protected API for administration, dashboards and exports.
 
 ## Attendance sequence
 
-1. The teacher selects one of their assigned course offerings, enters the classroom and chooses a 30–600 second duration.
-2. The server creates an active session and returns a cryptographically random token.
-3. The teacher phone advertises that anonymous token; no teacher, subject, room or student data is broadcast.
-4. Student phones observe the token several times. They never pair with or connect to the teacher phone, so 60 students do not create 60 Bluetooth connections.
+1. On the website, the teacher selects one assigned course, its registered classroom and a 30–600 second duration.
+2. The server creates an active session only when the room's provisioned ESP32 is available.
+3. The ESP32 polls the server and advertises a rotating anonymous code; no teacher, subject, room or student data is broadcast.
+4. Student phones observe the service advertisement several times. They never pair with or connect to the ESP32, so 60 students do not create 60 Bluetooth connections.
 5. The server reveals session details only when the signed-in student is enrolled in that exact offering.
 6. The student scans their card and submits the raw value over HTTPS with the registered installation ID and RSSI samples.
 7. The server verifies mobile-app authentication, the active phone, keyed barcode hash, roster, timer, median RSSI and overlapping-attendance rule in a transaction.
 8. A unique `(session_id, student_id)` database constraint makes repeat taps idempotent.
-9. The teacher polls the authoritative roster every two seconds and can add a reasoned manual override.
+9. The teacher website polls the authoritative roster every two seconds and can add a reasoned manual override.
 
 ## Adjacent classrooms
 

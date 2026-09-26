@@ -55,13 +55,13 @@ Also provide one redacted close-up photo of the printed barcode or confirm its s
 - Google Play Console account or an approved private-distribution method.
 - Android upload/signing key, owned and backed up by the college. Never send the private key in chat.
 - Production HTTPS API URL.
-- Minimum phone policy. The current app supports Android 8+ but attendance requires working BLE scanning; teacher phones also require BLE advertising support.
-- Student web policy: current Chrome on Android, Bluetooth and camera permission, and access to the production HTTPS hostname. Safari/iPhone and Firefox cannot be used for the Bluetooth attendance flow.
+- Minimum phone policy. The student-only app supports Android 8+ and requires BLE scanning. Teachers use the HTTPS website.
+- Decide whether the optional Chrome/Web Bluetooth fallback remains enabled. The 60-student pilot must use the native Android passive-scan path.
 
 ## 6. Physical pilot resources
 
-- One BLE-advertising-capable Android phone per test teacher.
-- At least five representative Android student phone models running Chrome and real test ID cards.
+- One provisioned ESP32 beacon per test classroom and a teacher laptop/phone for the HTTPS website.
+- At least five representative Android student phone models with the native app and real test ID cards.
 - Two adjacent classrooms for cross-wall testing.
 - Reliable Wi-Fi/mobile data during the attendance window.
 - A small pilot roster, named pilot owner, support contact and rollback procedure.

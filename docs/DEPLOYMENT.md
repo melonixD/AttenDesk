@@ -48,7 +48,29 @@ Debug builds permit cleartext HTTP for local development. Release builds do not.
 gradle bundleRelease -PATTENDESK_API_URL=https://attendance.college.edu
 ```
 
-Browser apps cannot advertise the required BLE classroom service. The teacher therefore uses the Android Teacher Beacon companion. Students can mark attendance either from the Android app or from the HTTPS website in Chrome on Android. The website uses Web Bluetooth as a Central client, reads the GATT session token, disconnects, and then scans the card with the browser camera. Safari/iPhone and Firefox are not supported for Bluetooth attendance.
+### Build an installable pilot APK with GitHub Actions
+
+The repository includes `.github/workflows/android-apk.yml`, which builds the
+student-only Android app without requiring Gradle or the Android SDK on the
+developer's computer.
+
+1. Push the project to GitHub.
+2. Open **Actions** and select **Build Android APK**.
+3. Click **Run workflow**.
+4. Enter the live HTTPS Attendesk deployment URL (for example,
+   `https://attendance.college.edu`). Do not enter a Supabase key or password.
+5. After the job succeeds, download the `AttenDesk-student-v1.1.0` artifact.
+
+To enable the website download button, extract `AttenDesk-student.apk` from the
+artifact, place it at `public/downloads/AttenDesk-student.apk`, commit it, and
+allow Vercel to deploy that commit.
+
+The artifact contains a debug-signed APK for prototype installation. A public
+release still requires a private Android signing key and a release build.
+
+The Android build is student-only. Teachers start and monitor attendance from the HTTPS website, the classroom ESP32 broadcasts the rotating code, and student phones passively scan its service data without opening Bluetooth connections. This is the required path for a 60-student class.
+
+The website still contains an optional Chrome/Web Bluetooth fallback which reads the same ESP32 over GATT. It is not the primary 60-student path; Safari/iPhone and Firefox do not support it.
 
 The source archive does not include a generated Gradle wrapper. Open `android/` in Android Studio (SDK 35/JDK 17), use the IDE's configured Gradle distribution, and generate the wrapper before command-line/CI builds. Commit the generated wrapper files to your deployment repository.
 
