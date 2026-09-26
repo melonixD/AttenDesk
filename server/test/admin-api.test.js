@@ -15,13 +15,17 @@ const STUDENT = '10000000-0000-4000-8000-000000000003';
 let storedPasswordHash;
 let storedBarcodeHash;
 let storedAcademicAssignment;
+let assignmentLookupSql;
 
 const admin = { id: ADMIN, organization_id: ORG, email: 'admin@hbtu.ac.in', full_name: 'Admin User', role: 'admin', status: 'active' };
 const db = {
   async query(sql, params = []) {
     if (sql.startsWith('SELECT id, organization_id, email')) return { rowCount: 1, rows: [admin] };
     if (sql.startsWith('SELECT id,email_domain FROM organizations')) return { rowCount: 1, rows: [{ id: ORG, email_domain: 'hbtu.ac.in' }] };
-    if (sql.includes('FROM sections sc JOIN branches')) return { rowCount: 1, rows: [{ section_id: params[0], branch_id: 'branch-1', semester_id: 'semester-1' }] };
+    if (sql.includes('FROM sections sc JOIN branches')) {
+      assignmentLookupSql = sql;
+      return { rowCount: 1, rows: [{ section_id: params[0], branch_id: 'branch-1', semester_id: 'semester-1' }] };
+    }
     throw new Error(`Unexpected outer query: ${sql.slice(0, 100)}`);
   },
   async transaction(work) {
@@ -63,6 +67,7 @@ test('admin can directly create a usable student account with a protected barcod
     assert.ok(verifyPassword('Student99', storedPasswordHash));
     assert.ok(storedBarcodeHash && !storedBarcodeHash.includes('1234567890'));
     assert.deepEqual(storedAcademicAssignment, { branchId: 'branch-1', semesterId: 'semester-1', sectionId: 'section-1' });
+    assert.doesNotMatch(assignmentLookupSql, /b\.active=true/, 'direct admin creation must tolerate an accidentally archived parent record');
     assert.equal('password_hash' in body.user, false);
   } finally {
     await new Promise(resolve => server.close(resolve));

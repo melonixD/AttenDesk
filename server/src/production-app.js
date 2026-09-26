@@ -76,18 +76,19 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const result = await db.query("SELECT * FROM organizations WHERE lower(email_domain)=lower($1)", [domain]);
     return result.rows[0] || null;
   };
-  const resolveRegistrationAssignment = async (connection, organizationId, role, details) => {
+  const resolveRegistrationAssignment = async (connection, organizationId, role, details, { allowInactive = false } = {}) => {
     if (role === "teacher") {
       if (!details.branchId) return { branchId: null };
       const branch = await connection.query("SELECT id AS branch_id FROM branches WHERE id=$1 AND organization_id=$2 AND active=true", [details.branchId, organizationId]);
       return branch.rowCount ? { branchId: branch.rows[0].branch_id } : null;
     }
     if (!details.sectionId) return null;
+    const activeClause = allowInactive ? "" : "AND b.active=true AND se.active=true AND sc.active=true";
     const academic = await connection.query(
       `SELECT sc.id AS section_id,sc.branch_id,sc.semester_id
        FROM sections sc JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=sc.semester_id
        WHERE sc.id=$1 AND b.organization_id=$2 AND se.organization_id=$2
-         AND b.active=true AND se.active=true AND sc.active=true`,
+         ${activeClause}`,
       [details.sectionId, organizationId]
     );
     if (!academic.rowCount) return null;
@@ -611,7 +612,10 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const details = role === "student"
       ? { branchId: req.body.branchId, semesterId: req.body.semesterId, sectionId: req.body.sectionId }
       : { branchId: req.body.branchId || null };
-    const assignment = await resolveRegistrationAssignment(db, req.user.organization_id, role, details);
+    // An administrator may be correcting/importing historical academic data.
+    // The section relationship is authoritative here, even when a parent was
+    // accidentally archived. Public registration remains active-record-only.
+    const assignment = await resolveRegistrationAssignment(db, req.user.organization_id, role, details, { allowInactive: role === "student" });
     if (!assignment) {
       return res.status(400).json({ error: "INVALID_ACADEMIC_ASSIGNMENT", message: "The selected academic assignment is invalid" });
     }
