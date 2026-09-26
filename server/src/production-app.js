@@ -76,19 +76,26 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const result = await db.query("SELECT * FROM organizations WHERE lower(email_domain)=lower($1)", [domain]);
     return result.rows[0] || null;
   };
-  const registrationAssignmentIsValid = async (connection, organizationId, role, details) => {
+  const resolveRegistrationAssignment = async (connection, organizationId, role, details) => {
     if (role === "teacher") {
-      if (!details.branchId) return true;
-      const branch = await connection.query("SELECT 1 FROM branches WHERE id=$1 AND organization_id=$2 AND active=true", [details.branchId, organizationId]);
-      return Boolean(branch.rowCount);
+      if (!details.branchId) return { branchId: null };
+      const branch = await connection.query("SELECT id AS branch_id FROM branches WHERE id=$1 AND organization_id=$2 AND active=true", [details.branchId, organizationId]);
+      return branch.rowCount ? { branchId: branch.rows[0].branch_id } : null;
     }
+    if (!details.sectionId) return null;
     const academic = await connection.query(
-      `SELECT 1 FROM branches b JOIN semesters se ON se.id=$2 JOIN sections sc ON sc.id=$3
-       WHERE b.id=$1 AND b.organization_id=$4 AND se.organization_id=$4 AND sc.branch_id=b.id AND sc.semester_id=se.id
+      `SELECT sc.id AS section_id,sc.branch_id,sc.semester_id
+       FROM sections sc JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=sc.semester_id
+       WHERE sc.id=$1 AND b.organization_id=$2 AND se.organization_id=$2
          AND b.active=true AND se.active=true AND sc.active=true`,
-      [details.branchId, details.semesterId, details.sectionId, organizationId]
+      [details.sectionId, organizationId]
     );
-    return Boolean(academic.rowCount);
+    if (!academic.rowCount) return null;
+    return {
+      sectionId: academic.rows[0].section_id,
+      branchId: academic.rows[0].branch_id,
+      semesterId: academic.rows[0].semester_id
+    };
   };
   const createOtp = async ({ organization, email, purpose }) => {
     const code = numericOtp();
@@ -172,10 +179,12 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const details = role === "student"
       ? { rollNumber: req.body.rollNumber, branchId: req.body.branchId, semesterId: req.body.semesterId, sectionId: req.body.sectionId, phone: req.body.phone || null }
       : { employeeCode: req.body.employeeCode, branchId: req.body.branchId || null, phone: req.body.phone || null };
-    const roleRequired = role === "student" ? ["rollNumber", "branchId", "semesterId", "sectionId"] : ["employeeCode"];
+    const roleRequired = role === "student" ? ["rollNumber", "sectionId"] : ["employeeCode"];
     const detailMissing = roleRequired.filter((field) => !String(details[field] || "").trim());
     if (detailMissing.length) return res.status(400).json({ error: "MISSING_FIELDS", fields: detailMissing });
-    if (!await registrationAssignmentIsValid(db, organization.id, role, details)) return res.status(400).json({ error: "INVALID_ACADEMIC_ASSIGNMENT" });
+    const assignment = await resolveRegistrationAssignment(db, organization.id, role, details);
+    if (!assignment) return res.status(400).json({ error: "INVALID_ACADEMIC_ASSIGNMENT" });
+    Object.assign(details, assignment);
     const result = await db.query(
       `INSERT INTO registration_requests(organization_id,email,full_name,requested_role,details,status)
        VALUES($1,$2,$3,$4,$5,'email_pending')
@@ -434,9 +443,11 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       const pending = await client.query("SELECT * FROM registration_requests WHERE id=$1 AND organization_id=$2 AND status='pending_approval' FOR UPDATE", [req.params.id, req.user.organization_id]);
       const registration = pending.rows[0];
       if (!registration) throw Object.assign(new Error("Registration is not ready for approval"), { status: 404, code: "REGISTRATION_NOT_FOUND" });
-      if (!await registrationAssignmentIsValid(client, registration.organization_id, registration.requested_role, registration.details)) {
+      const assignment = await resolveRegistrationAssignment(client, registration.organization_id, registration.requested_role, registration.details);
+      if (!assignment) {
         throw Object.assign(new Error("The selected branch, semester or section is no longer valid"), { status: 400, code: "INVALID_ACADEMIC_ASSIGNMENT" });
       }
+      Object.assign(registration.details, assignment);
       const userResult = await client.query("INSERT INTO users(organization_id,email,full_name,role,status) VALUES($1,$2,$3,$4,'active') RETURNING *", [registration.organization_id, registration.email, registration.full_name, registration.requested_role]);
       const user = userResult.rows[0];
       if (registration.requested_role === "student") {
@@ -575,7 +586,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     if (!['teacher', 'student'].includes(role)) return res.status(400).json({ error: "BAD_ROLE", message: "Choose student or teacher" });
     const commonMissing = required(req.body, ["fullName", "email"]);
     const roleMissing = role === "student"
-      ? required(req.body, ["rollNumber", "branchId", "semesterId", "sectionId"])
+      ? required(req.body, ["rollNumber", "sectionId"])
       : required(req.body, ["employeeCode", "password"]);
     const missing = [...commonMissing, ...roleMissing];
     if (missing.length) return res.status(400).json({ error: "MISSING_FIELDS", message: `Complete: ${missing.join(", ")}`, fields: missing });
@@ -600,9 +611,11 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const details = role === "student"
       ? { branchId: req.body.branchId, semesterId: req.body.semesterId, sectionId: req.body.sectionId }
       : { branchId: req.body.branchId || null };
-    if (!await registrationAssignmentIsValid(db, req.user.organization_id, role, details)) {
+    const assignment = await resolveRegistrationAssignment(db, req.user.organization_id, role, details);
+    if (!assignment) {
       return res.status(400).json({ error: "INVALID_ACADEMIC_ASSIGNMENT", message: "The selected academic assignment is invalid" });
     }
+    Object.assign(details, assignment);
 
     const created = await db.transaction(async (client) => {
       const identifier = role === "student" ? cleanRoll(req.body.rollNumber) : cleanUsername(req.body.employeeCode);
@@ -616,7 +629,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       if (role === "student") {
         await client.query(
           "INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,phone) VALUES($1,$2,$3,$4,$5,$6)",
-          [user.id, cleanRoll(req.body.rollNumber), req.body.branchId, req.body.semesterId, req.body.sectionId, req.body.phone || null]
+          [user.id, cleanRoll(req.body.rollNumber), details.branchId, details.semesterId, details.sectionId, req.body.phone || null]
         );
         if (barcode) {
           await client.query(
@@ -627,7 +640,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       } else {
         await client.query(
           "INSERT INTO teachers(user_id,employee_code,branch_id,phone) VALUES($1,$2,$3,$4)",
-          [user.id, String(req.body.employeeCode).trim(), req.body.branchId || null, req.body.phone || null]
+          [user.id, String(req.body.employeeCode).trim(), details.branchId || null, req.body.phone || null]
         );
       }
       await audit(client, req, "USER_CREATED", "user", user.id, null, { email: user.email, role: user.role, username: user.username });

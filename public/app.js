@@ -1233,11 +1233,6 @@ async function openAddPersonDialog(role) {
     setButtonBusy(button, true, 'Creating…');
     try {
       const body = Object.fromEntries(new FormData(formEvent.target).entries());
-      if (role === 'student') {
-        const section = $('#person-section').selectedOptions[0];
-        body.branchId = section.dataset.branchId;
-        body.semesterId = section.dataset.semesterId;
-      }
       const result = await api('/api/admin/people', { method: 'POST', body });
       closeModal();
       toast(`${titleCase(role)} created · login ${result.loginIdentifier}`);

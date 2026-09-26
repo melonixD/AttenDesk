@@ -6,7 +6,7 @@
  * offline queue, because an offline "mark present" would be exactly the
  * manipulation this system exists to prevent.
  */
-const SHELL = 'attendesk-shell-v4-admin-workflows';
+const SHELL = 'attendesk-shell-v5-student-registration-fix';
 const ASSETS = ['/', '/index.html', '/app.js', '/styles.css', '/icon.svg', '/manifest.webmanifest'];
 
 self.addEventListener('install', (event) => {

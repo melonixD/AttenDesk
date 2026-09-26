@@ -62,8 +62,8 @@ test('a fresh admin can open People and create the first student directly', asyn
   await new Promise(resolve => setTimeout(resolve, 50));
 
   assert.equal(createdBody.role, 'student');
-  assert.equal(createdBody.branchId, branch.id);
-  assert.equal(createdBody.semesterId, semester.id);
+  assert.equal(createdBody.branchId, undefined);
+  assert.equal(createdBody.semesterId, undefined);
   assert.equal(createdBody.sectionId, section.id);
   assert.equal(createdBody.barcode, '1234567890');
   w.close();
