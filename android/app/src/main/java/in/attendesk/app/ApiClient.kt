@@ -27,6 +27,17 @@ class ApiClient(private val baseUrl: String) {
         post("/api/auth/request-otp", JSONObject().put("email", email), authenticated = false)
             .optString("developmentOtp").takeIf { it.isNotBlank() }
 
+    fun latestAppUpdate(): AppUpdate {
+        val response = get("/android-update.json", authenticated = false)
+        return AppUpdate(
+            versionCode = response.optInt("versionCode", 0),
+            versionName = response.optString("versionName", "new version"),
+            downloadUrl = response.optString("downloadUrl", "/downloads/AttenDesk-student.apk"),
+            required = response.optBoolean("required", false),
+            notes = response.optString("notes", "A new AttenDesk update is available.")
+        )
+    }
+
     fun studentPasswordLogin(
         fullName: String,
         rollNumber: String,
@@ -120,7 +131,7 @@ class ApiClient(private val baseUrl: String) {
         )
     }
 
-    private fun get(path: String): JSONObject = JSONObject(request(path, "GET", null))
+    private fun get(path: String, authenticated: Boolean = true): JSONObject = JSONObject(request(path, "GET", null, authenticated))
     private fun post(path: String, body: JSONObject, authenticated: Boolean = true, bearerOverride: String? = null): JSONObject =
         JSONObject(request(path, "POST", body, authenticated, bearerOverride))
 

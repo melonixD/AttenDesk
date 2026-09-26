@@ -3,7 +3,7 @@
 ## Components
 
 - The teacher website creates and monitors attendance sessions through HTTPS.
-- One provisioned ESP32 per classroom polls the server and broadcasts only the current rotating 8-byte code as BLE service data.
+- One provisioned ESP32 per classroom broadcasts only the current rotating 8-byte code as BLE service data. It can receive codes through server polling over Wi-Fi or direct teacher-browser BLE provisioning.
 - The student-only Android app passively scans ESP32 advertisements, collects RSSI samples, resolves eligible tokens through HTTPS and scans the printed ID barcode.
 - The Express API is the authority for timers, roles, rosters, devices, barcodes and attendance.
 - PostgreSQL stores academic configuration, identities, login challenges, course rosters, sessions, attendance and audit events.
@@ -13,7 +13,7 @@
 
 1. On the website, the teacher selects one assigned course, its registered classroom and a 30–600 second duration.
 2. The server creates an active session only when the room's provisioned ESP32 is available.
-3. The ESP32 polls the server and advertises a rotating anonymous code; no teacher, subject, room or student data is broadcast.
+3. In Automatic Wi-Fi mode the ESP32 polls the server. In Direct Bluetooth mode the teacher browser verifies the room beacon and preloads a time-limited rotating-code sequence. No teacher, subject, room or student data is broadcast.
 4. Student phones observe the service advertisement several times. They never pair with or connect to the ESP32, so 60 students do not create 60 Bluetooth connections.
 5. The server reveals session details only when the signed-in student is enrolled in that exact offering.
 6. The student scans their card and submits the raw value over HTTPS with the registered installation ID and RSSI samples.

@@ -3,6 +3,7 @@ package `in`.attendesk.app
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
@@ -11,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.net.Uri
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -34,6 +36,7 @@ class MainActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     private val resolvedTokens = mutableSetOf<String>()
     private var signedInUser: AuthUser? = null
+    private var updatePrompted = false
     private val installationId: String by lazy {
         val preferences = getSharedPreferences("attendesk_secure", Context.MODE_PRIVATE)
         preferences.getString("installation_id", null) ?: java.util.UUID.randomUUID().toString().also {
@@ -47,6 +50,29 @@ class MainActivity : Activity() {
         ble = BleSessionManager(this)
         if (!ble.hasPermissions()) requestPermissions(ble.requiredPermissions(), 104)
         showLogin()
+        checkForAppUpdate()
+    }
+
+    private fun checkForAppUpdate() {
+        if (updatePrompted) return
+        io.execute {
+            runCatching { api.latestAppUpdate() }.onSuccess { update ->
+                if (update.versionCode > BuildConfig.VERSION_CODE) main.post {
+                    updatePrompted = true
+                    val url = if (update.downloadUrl.startsWith("http")) update.downloadUrl
+                    else BuildConfig.API_BASE_URL.trimEnd('/') + "/" + update.downloadUrl.trimStart('/')
+                    AlertDialog.Builder(this)
+                        .setTitle("AttenDesk ${update.versionName} is available")
+                        .setMessage("${update.notes}\n\nDownload the verified APK, open it, then tap Update. Your account and registered phone stay unchanged.")
+                        .setPositiveButton("Download update") { _, _ ->
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        }
+                        .apply { if (!update.required) setNegativeButton("Later", null) }
+                        .setCancelable(!update.required)
+                        .show()
+                }
+            }
+        }
     }
 
     override fun onDestroy() {

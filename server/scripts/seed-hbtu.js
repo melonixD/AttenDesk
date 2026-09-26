@@ -156,9 +156,9 @@ try {
       password: process.env.SEED_STUDENT_PASSWORD || null
     });
     await db.query(
-      `INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id)
-       VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id) DO UPDATE SET roll_number=EXCLUDED.roll_number, section_id=EXCLUDED.section_id`,
-      [userId, student.roll, branch.id, semester.id, section.id]
+      `INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,batch_year)
+       VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(user_id) DO UPDATE SET roll_number=EXCLUDED.roll_number, section_id=EXCLUDED.section_id, batch_year=EXCLUDED.batch_year`,
+      [userId, student.roll, branch.id, semester.id, section.id, YEAR]
     );
     await db.query(
       `INSERT INTO barcode_registrations(student_id,barcode_hash,barcode_last_four,registered_by)

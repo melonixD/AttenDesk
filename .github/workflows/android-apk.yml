@@ -8,6 +8,16 @@ on:
         required: true
         default: "https://atten-desk.vercel.app"
         type: string
+      version_code:
+        description: "Android version code; it must be higher than the previous build"
+        required: true
+        default: "5"
+        type: string
+      version_name:
+        description: "Version shown to students"
+        required: true
+        default: "1.3.0"
+        type: string
 
 permissions:
   contents: read
@@ -42,25 +52,48 @@ jobs:
             *) echo "API URL must begin with https://" >&2; exit 1 ;;
           esac
 
+      - name: Prepare stable release signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "Missing ANDROID_KEYSTORE_BASE64 GitHub secret" >&2; exit 1; }
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/attendesk-release.jks
+
       - name: Compile APK
         env:
           ATTENDESK_API_URL: ${{ inputs.api_url }}
+          ATTENDESK_KEYSTORE_FILE: ${{ github.workspace }}/android/attendesk-release.jks
+          ATTENDESK_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ATTENDESK_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ATTENDESK_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: >-
-          gradle -p android --no-daemon clean assembleDebug
+          gradle -p android --no-daemon clean assembleRelease
           -PATTENDESK_API_URL="$ATTENDESK_API_URL"
+          -PATTENDESK_VERSION_CODE="${{ inputs.version_code }}"
+          -PATTENDESK_VERSION_NAME="${{ inputs.version_name }}"
 
       - name: Prepare APK
         run: |
           mkdir -p android/dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk android/dist/AttenDesk-student.apk
+          cp android/app/build/outputs/apk/release/app-release.apk android/dist/AttenDesk-student.apk
           sha256sum android/dist/AttenDesk-student.apk > android/dist/AttenDesk-student.apk.sha256
+          cat > android/dist/android-update.json <<EOF
+          {
+            "versionCode": ${{ inputs.version_code }},
+            "versionName": "${{ inputs.version_name }}",
+            "downloadUrl": "/downloads/AttenDesk-student.apk",
+            "required": false,
+            "notes": "A new signed AttenDesk update is available."
+          }
+          EOF
 
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: AttenDesk-student-v1.2.0
+          name: AttenDesk-student-v${{ inputs.version_name }}
           path: |
             android/dist/AttenDesk-student.apk
             android/dist/AttenDesk-student.apk.sha256
+            android/dist/android-update.json
           if-no-files-found: error
           retention-days: 30

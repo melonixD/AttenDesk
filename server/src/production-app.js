@@ -3,7 +3,7 @@ import express from "express";
 import { fileURLToPath } from "node:url";
 import { attendancePdf, attendanceWorkbook } from "./reports.js";
 import { createMailer } from "./mailer.js";
-import { ROTATION_SECONDS, acceptableRotatingCodes, createRateLimiter, hashPassword, ipDigest, issueAccessToken, keyedHash, numericOtp, otpHash, passwordProblem, randomToken, rotatingCode, secondsUntilRotation, securityHeaders, sha256, verifyAccessToken, verifyPassword } from "./security.js";
+import { ROTATION_SECONDS, acceptableRotatingCodes, createRateLimiter, hashPassword, ipDigest, issueAccessToken, keyedHash, numericOtp, otpHash, passwordProblem, randomToken, rotatingCode, rotationWindow, secondsUntilRotation, securityHeaders, sha256, verifyAccessToken, verifyPassword } from "./security.js";
 
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 const cleanEmail = (value) => String(value || "").trim().toLowerCase();
@@ -85,7 +85,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     if (!details.sectionId) return null;
     const activeClause = allowInactive ? "" : "AND b.active=true AND se.active=true AND sc.active=true";
     const academic = await connection.query(
-      `SELECT sc.id AS section_id,sc.branch_id,sc.semester_id
+      `SELECT sc.id AS section_id,sc.branch_id,sc.semester_id,se.academic_year
        FROM sections sc JOIN branches b ON b.id=sc.branch_id JOIN semesters se ON se.id=sc.semester_id
        WHERE sc.id=$1 AND b.organization_id=$2 AND se.organization_id=$2
          ${activeClause}`,
@@ -95,7 +95,8 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     return {
       sectionId: academic.rows[0].section_id,
       branchId: academic.rows[0].branch_id,
-      semesterId: academic.rows[0].semester_id
+      semesterId: academic.rows[0].semester_id,
+      batchYear: academic.rows[0].academic_year
     };
   };
   const createOtp = async ({ organization, email, purpose }) => {
@@ -452,7 +453,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       const userResult = await client.query("INSERT INTO users(organization_id,email,full_name,role,status) VALUES($1,$2,$3,$4,'active') RETURNING *", [registration.organization_id, registration.email, registration.full_name, registration.requested_role]);
       const user = userResult.rows[0];
       if (registration.requested_role === "student") {
-        await client.query("INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,phone) VALUES($1,$2,$3,$4,$5,$6)", [user.id, registration.details.rollNumber, registration.details.branchId, registration.details.semesterId, registration.details.sectionId, registration.details.phone || null]);
+        await client.query("INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,batch_year,phone) VALUES($1,$2,$3,$4,$5,$6,$7)", [user.id, registration.details.rollNumber, registration.details.branchId, registration.details.semesterId, registration.details.sectionId, registration.details.batchYear, registration.details.phone || null]);
       } else {
         await client.query("INSERT INTO teachers(user_id,employee_code,branch_id,phone) VALUES($1,$2,$3,$4)", [user.id, registration.details.employeeCode, registration.details.branchId || null, registration.details.phone || null]);
       }
@@ -567,28 +568,31 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
   }));
 
   app.get("/api/admin/people", authenticate, roles("admin"), asyncRoute(async (req, res) => {
-    const role = req.query.role === "teacher" ? "teacher" : "student";
+    const role = ['student', 'teacher', 'admin'].includes(req.query.role) ? req.query.role : "student";
     const query = role === "student"
-      ? `SELECT u.id,u.full_name,u.email,u.status,s.roll_number,b.name AS branch,se.number AS semester,sc.name AS section,
+      ? `SELECT u.id,u.full_name,u.email,u.status,s.roll_number,s.batch_year,b.id AS branch_id,b.name AS branch,b.code AS branch_code,
+           se.id AS semester_id,se.number AS semester,se.academic_year,sc.id AS section_id,sc.name AS section,
            br.barcode_last_four,br.status AS barcode_status,sd.device_name,sd.last_seen_at
          FROM users u JOIN students s ON s.user_id=u.id JOIN branches b ON b.id=s.branch_id JOIN semesters se ON se.id=s.semester_id
          JOIN sections sc ON sc.id=s.section_id LEFT JOIN barcode_registrations br ON br.student_id=u.id AND br.status='active'
          LEFT JOIN student_devices sd ON sd.student_id=u.id AND sd.status='active'
-         WHERE u.organization_id=$1 ORDER BY s.roll_number`
-      : `SELECT u.id,u.full_name,u.email,u.status,t.employee_code,b.name AS branch
+         WHERE u.organization_id=$1 ORDER BY b.name,se.number,s.batch_year,s.roll_number`
+      : role === "teacher" ? `SELECT u.id,u.full_name,u.email,u.username,u.status,t.employee_code,b.name AS branch
          FROM users u JOIN teachers t ON t.user_id=u.id LEFT JOIN branches b ON b.id=t.branch_id
-         WHERE u.organization_id=$1 ORDER BY u.full_name`;
+         WHERE u.organization_id=$1 ORDER BY u.full_name`
+      : `SELECT u.id,u.full_name,u.email,u.username,u.status,u.last_login_at,u.created_at
+         FROM users u WHERE u.organization_id=$1 AND u.role='admin' ORDER BY u.full_name`;
     const result = await db.query(query, [req.user.organization_id]);
     res.json(result.rows);
   }));
 
   app.post("/api/admin/people", authenticate, roles("admin"), asyncRoute(async (req, res) => {
     const role = req.body.role;
-    if (!['teacher', 'student'].includes(role)) return res.status(400).json({ error: "BAD_ROLE", message: "Choose student or teacher" });
+    if (!['admin', 'teacher', 'student'].includes(role)) return res.status(400).json({ error: "BAD_ROLE", message: "Choose administrator, teacher or student" });
     const commonMissing = required(req.body, ["fullName", "email"]);
     const roleMissing = role === "student"
-      ? required(req.body, ["rollNumber", "sectionId"])
-      : required(req.body, ["employeeCode", "password"]);
+      ? required(req.body, ["rollNumber", "sectionId", "password"])
+      : role === "teacher" ? required(req.body, ["employeeCode", "password"]) : required(req.body, ["username", "password"]);
     const missing = [...commonMissing, ...roleMissing];
     if (missing.length) return res.status(400).json({ error: "MISSING_FIELDS", message: `Complete: ${missing.join(", ")}`, fields: missing });
 
@@ -615,14 +619,19 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     // An administrator may be correcting/importing historical academic data.
     // The section relationship is authoritative here, even when a parent was
     // accidentally archived. Public registration remains active-record-only.
-    const assignment = await resolveRegistrationAssignment(db, req.user.organization_id, role, details, { allowInactive: role === "student" });
-    if (!assignment) {
+    const assignment = role === 'admin' ? {} : await resolveRegistrationAssignment(db, req.user.organization_id, role, details, { allowInactive: role === "student" });
+    if (role !== 'admin' && !assignment) {
       return res.status(400).json({ error: "INVALID_ACADEMIC_ASSIGNMENT", message: "The selected academic assignment is invalid" });
     }
     Object.assign(details, assignment);
+    if (role === 'student') {
+      details.batchYear = String(req.body.batchYear || details.batchYear || '').trim();
+      if (details.batchYear && !/^\d{2,4}-\d{2,4}$/.test(details.batchYear)) return res.status(400).json({ error: 'INVALID_BATCH_YEAR', message: 'Use a batch such as 2025-26' });
+    }
 
     const created = await db.transaction(async (client) => {
-      const identifier = role === "student" ? cleanRoll(req.body.rollNumber) : cleanUsername(req.body.employeeCode);
+      const identifier = role === "student" ? cleanRoll(req.body.rollNumber) : cleanUsername(role === 'admin' ? req.body.username : req.body.employeeCode);
+      if (!identifier) throw Object.assign(new Error('Enter a valid login username'), { status: 400, code: 'INVALID_USERNAME' });
       const inserted = await client.query(
         `INSERT INTO users(organization_id,email,username,full_name,role,status,password_hash,password_set_at)
          VALUES($1,$2,$3,$4,$5,'active',$6,CASE WHEN $6::text IS NULL THEN NULL ELSE now() END)
@@ -632,8 +641,8 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       const user = inserted.rows[0];
       if (role === "student") {
         await client.query(
-          "INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,phone) VALUES($1,$2,$3,$4,$5,$6)",
-          [user.id, cleanRoll(req.body.rollNumber), details.branchId, details.semesterId, details.sectionId, req.body.phone || null]
+          "INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,batch_year,phone) VALUES($1,$2,$3,$4,$5,$6,$7)",
+          [user.id, cleanRoll(req.body.rollNumber), details.branchId, details.semesterId, details.sectionId, details.batchYear, req.body.phone || null]
         );
         if (barcode) {
           await client.query(
@@ -641,7 +650,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
             [user.id, keyedHash(barcodePepper, `${req.user.organization_id}:${barcode}`), barcode.slice(-4), req.user.id]
           );
         }
-      } else {
+      } else if (role === 'teacher') {
         await client.query(
           "INSERT INTO teachers(user_id,employee_code,branch_id,phone) VALUES($1,$2,$3,$4)",
           [user.id, String(req.body.employeeCode).trim(), details.branchId || null, req.body.phone || null]
@@ -658,7 +667,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     if (problem) return res.status(400).json({ error: "WEAK_PASSWORD", message: problem });
     const updated = await db.transaction(async (client) => {
       const found = await client.query(
-        "SELECT id,email,full_name,role FROM users WHERE id=$1 AND organization_id=$2 AND role IN ('teacher','student') FOR UPDATE",
+        "SELECT id,email,full_name,role FROM users WHERE id=$1 AND organization_id=$2 AND role IN ('admin','teacher','student') FOR UPDATE",
         [req.params.id, req.user.organization_id]
       );
       if (!found.rowCount) throw Object.assign(new Error("User not found"), { status: 404, code: "USER_NOT_FOUND" });
@@ -675,8 +684,12 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     if (!["active", "suspended"].includes(status)) return res.status(400).json({ error: "INVALID_USER_STATUS" });
     if (req.params.id === req.user.id) return res.status(400).json({ error: "CANNOT_CHANGE_OWN_STATUS" });
     const updated = await db.transaction(async (client) => {
-      const before = await client.query("SELECT id,email,full_name,role,status FROM users WHERE id=$1 AND organization_id=$2 AND role IN ('teacher','student') FOR UPDATE", [req.params.id, req.user.organization_id]);
+      const before = await client.query("SELECT id,email,full_name,role,status FROM users WHERE id=$1 AND organization_id=$2 AND role IN ('admin','teacher','student') FOR UPDATE", [req.params.id, req.user.organization_id]);
       if (!before.rowCount) throw Object.assign(new Error("User not found"), { status: 404, code: "USER_NOT_FOUND" });
+      if (before.rows[0].role === 'admin' && status === 'suspended') {
+        const activeAdmins = await client.query("SELECT count(*)::int AS count FROM users WHERE organization_id=$1 AND role='admin' AND status='active'", [req.user.organization_id]);
+        if (activeAdmins.rows[0].count <= 1) throw Object.assign(new Error("The college must keep at least one active administrator"), { status: 400, code: "LAST_ADMIN_REQUIRED" });
+      }
       const result = await client.query("UPDATE users SET status=$1,updated_at=now() WHERE id=$2 RETURNING id,email,full_name,role,status", [status, req.params.id]);
       if (status === "suspended") await client.query("UPDATE refresh_tokens SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [req.params.id]);
       await audit(client, req, status === "suspended" ? "USER_SUSPENDED" : "USER_REACTIVATED", "user", req.params.id, before.rows[0], result.rows[0]);
@@ -705,6 +718,41 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       return inserted.rows[0];
     });
     res.json(result);
+  }));
+
+  app.post("/api/admin/barcodes/verify", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const barcode = String(req.body.barcode || "").trim();
+    if (barcode.length < 4 || barcode.length > 128) return res.status(400).json({ error: "INVALID_BARCODE", message: "Scan a valid student ID barcode" });
+    const hash = keyedHash(barcodePepper, `${req.user.organization_id}:${barcode}`);
+    const result = await db.query(
+      `SELECT u.id,u.full_name,u.email,u.status,s.roll_number,s.batch_year,b.name AS branch,se.number AS semester,sc.name AS section,
+              br.barcode_last_four,br.registered_at
+       FROM barcode_registrations br JOIN students s ON s.user_id=br.student_id JOIN users u ON u.id=s.user_id
+       JOIN branches b ON b.id=s.branch_id JOIN semesters se ON se.id=s.semester_id JOIN sections sc ON sc.id=s.section_id
+       WHERE u.organization_id=$1 AND br.barcode_hash=$2 AND br.status='active'`,
+      [req.user.organization_id, hash]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "BARCODE_NOT_REGISTERED", message: "This barcode is not registered to an active student" });
+    await db.transaction((client) => audit(client, req, "BARCODE_TESTED", "student", result.rows[0].id, null, { matched: true }));
+    res.json({ matched: true, student: result.rows[0] });
+  }));
+
+  app.patch("/api/admin/students/:id/academic", authenticate, roles("admin"), asyncRoute(async (req, res) => {
+    const batchYear = String(req.body.batchYear || "").trim();
+    if (!/^\d{2,4}-\d{2,4}$/.test(batchYear)) return res.status(400).json({ error: "INVALID_BATCH_YEAR", message: "Use a batch such as 2025-26" });
+    const assignment = await resolveRegistrationAssignment(db, req.user.organization_id, 'student', { sectionId: req.body.sectionId }, { allowInactive: true });
+    if (!assignment) return res.status(400).json({ error: "INVALID_ACADEMIC_ASSIGNMENT", message: "Choose a valid class section" });
+    const updated = await db.transaction(async (client) => {
+      const before = await client.query("SELECT s.* FROM students s JOIN users u ON u.id=s.user_id WHERE s.user_id=$1 AND u.organization_id=$2 FOR UPDATE", [req.params.id, req.user.organization_id]);
+      if (!before.rowCount) throw Object.assign(new Error('Student not found'), { status: 404, code: 'STUDENT_NOT_FOUND' });
+      const result = await client.query(
+        "UPDATE students SET branch_id=$1,semester_id=$2,section_id=$3,batch_year=$4 WHERE user_id=$5 RETURNING *",
+        [assignment.branchId, assignment.semesterId, assignment.sectionId, batchYear, req.params.id]
+      );
+      await audit(client, req, 'STUDENT_ACADEMIC_UPDATED', 'student', req.params.id, before.rows[0], result.rows[0]);
+      return result.rows[0];
+    });
+    res.json(updated);
   }));
 
   app.get("/api/admin/device-change-requests", authenticate, roles("admin"), asyncRoute(async (req, res) => {
@@ -921,7 +969,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
 
   const sessionDetails = async (sessionId, withRoster = false) => {
     const result = await db.query(
-      `SELECT a.id,a.teacher_id,a.starts_at,a.ends_at,a.status,a.room,o.id AS offering_id,o.organization_id,su.name AS subject,su.code AS subject_code,
+      `SELECT a.id,a.teacher_id,a.starts_at,a.ends_at,a.status,a.room,a.beacon_transport,o.id AS offering_id,o.organization_id,su.name AS subject,su.code AS subject_code,
        b.name AS branch,sc.name AS section,u.full_name AS teacher
        FROM attendance_sessions a JOIN course_offerings o ON o.id=a.offering_id JOIN subjects su ON su.id=o.subject_id
        JOIN sections sc ON sc.id=o.section_id JOIN branches b ON b.id=sc.branch_id JOIN users u ON u.id=a.teacher_id
@@ -934,7 +982,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       `SELECT u.id,u.full_name,s.roll_number,s.profile_photo_url,COALESCE(ar.status,'absent') AS status,ar.method,ar.marked_at,ar.reason
        FROM student_enrollments e JOIN students s ON s.user_id=e.student_id JOIN users u ON u.id=s.user_id
        LEFT JOIN attendance_records ar ON ar.student_id=e.student_id AND ar.session_id=$1
-       WHERE e.offering_id=$2 ORDER BY s.roll_number`, [sessionId, session.offering_id]
+       WHERE e.offering_id=$2 ORDER BY lower(u.full_name),s.roll_number`, [sessionId, session.offering_id]
     );
     return { ...session, roster: roster.rows };
   };
@@ -953,6 +1001,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
 
   app.post("/api/attendance/sessions", authenticate, roles("teacher"), asyncRoute(async (req, res) => {
     const durationSeconds = Math.max(30, Math.min(600, Number(req.body.durationSeconds) || 180));
+    const beaconTransport = req.body.beaconTransport === "bluetooth" ? "bluetooth" : "wifi";
     const offering = await db.query("SELECT * FROM course_offerings WHERE id=$1 AND teacher_id=$2 AND organization_id=$3 AND active=true", [req.body.offeringId, req.user.id, req.user.organization_id]);
     if (!offering.rowCount) return res.status(403).json({ error: "CLASS_NOT_ASSIGNED" });
     const room = cleanRoom(req.body.room || offering.rows[0].default_room);
@@ -970,7 +1019,12 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       ? await db.query("SELECT id, beacon_code, label, last_seen_at, status FROM beacons WHERE classroom_id=$1 AND enabled=true LIMIT 1", [classroomId])
       : { rows: [] };
     const beaconId = beaconRow.rows[0]?.id || null;
-    if (process.env.REQUIRE_ESP32 !== 'false') {
+    if (beaconTransport === "bluetooth") {
+      if (!beaconId) return res.status(409).json({ error: 'ESP32_REQUIRED', message: 'Register and assign an ESP32 beacon to this classroom first.' });
+      if (String(req.body.beaconCode || '').trim().toLowerCase() !== String(beaconRow.rows[0].beacon_code).trim().toLowerCase()) {
+        return res.status(409).json({ error: 'BEACON_ROOM_MISMATCH', message: `The selected ESP32 is not assigned to room ${room}. Choose the ${beaconRow.rows[0].label} beacon.` });
+      }
+    } else if (process.env.REQUIRE_ESP32 !== 'false') {
       if (!beaconId) return res.status(409).json({ error: 'ESP32_REQUIRED', message: 'Register and assign an ESP32 beacon to this classroom first.' });
       const seen = beaconRow.rows[0].last_seen_at;
       if (!seen || Date.now() - new Date(seen).getTime() >= beaconOfflineSeconds * 1000) return res.status(409).json({ error: 'BEACON_OFFLINE', message: 'The classroom ESP32 is offline. Check its power, Wi-Fi, API address and device key.' });
@@ -999,9 +1053,9 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       );
       if (roomInUse.rowCount) throw Object.assign(new Error(`Room ${room} already has an active attendance session`), { status: 409, code: "ROOM_ALREADY_ACTIVE", sessionId: roomInUse.rows[0].id });
       const created = await client.query(
-        `INSERT INTO attendance_sessions(offering_id,teacher_id,room,beacon_token_hash,ends_at,classroom_id,beacon_id,organization_id)
-         VALUES($1,$2,$3,$4,now()+($5 || ' seconds')::interval,$6,$7,$8) RETURNING id`,
-        [req.body.offeringId, req.user.id, room, sha256(beaconToken), durationSeconds, classroomId, beaconId, req.user.organization_id]
+        `INSERT INTO attendance_sessions(offering_id,teacher_id,room,beacon_token_hash,ends_at,classroom_id,beacon_id,organization_id,beacon_transport)
+         VALUES($1,$2,$3,$4,now()+($5 || ' seconds')::interval,$6,$7,$8,$9) RETURNING id`,
+        [req.body.offeringId, req.user.id, room, sha256(beaconToken), durationSeconds, classroomId, beaconId, req.user.organization_id, beaconTransport]
       );
       await audit(client, req, "ATTENDANCE_SESSION_STARTED", "attendance_session", created.rows[0].id, null, { offeringId: req.body.offeringId, room, durationSeconds });
       return created;
@@ -1009,12 +1063,24 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const session = await sessionDetails(result.rows[0].id, true);
     const beacon = beaconRow.rows[0] || null;
     const beaconOnline = Boolean(beacon?.last_seen_at && Date.now() - new Date(beacon.last_seen_at).getTime() < beaconOfflineSeconds * 1000);
+    const firstCodeSeconds = secondsUntilRotation();
+    const directCodeCount = Math.max(1, Math.ceil(Math.max(0, durationSeconds - firstCodeSeconds) / ROTATION_SECONDS) + 1);
+    const firstWindow = rotationWindow();
+    const directProvisioning = beaconTransport === "bluetooth" ? {
+      version: 1,
+      firstCodeSeconds,
+      totalSeconds: durationSeconds,
+      codes: Array.from({ length: directCodeCount }, (_, index) => rotatingCode(authSecret, session.id, firstWindow + index))
+    } : null;
     res.status(201).json({
       ...session,
       beaconToken,
+      beaconTransport,
+      provisioningSeconds: durationSeconds,
+      directProvisioning,
       rotationSeconds: ROTATION_SECONDS,
       beacon: beacon ? { id: beacon.id, code: beacon.beacon_code, label: beacon.label, online: beaconOnline } : null,
-      beaconWarning: beacon
+      beaconWarning: beaconTransport === "bluetooth" ? null : beacon
         ? (beaconOnline ? null : `The ${beacon.label} beacon has not reported in recently. Students may not be able to detect this room.`)
         : `Room ${room} has no ESP32 beacon registered. Students can only mark attendance if a teacher phone beacon is broadcasting.`
     });
@@ -1044,11 +1110,11 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
       if (acceptableRotatingCodes(authSecret, row.id).includes(code)) return { sessionId: row.id, proof: "rotating_beacon" };
     }
     const legacy = await db.query(
-      `SELECT a.id FROM attendance_sessions a JOIN student_enrollments e ON e.offering_id=a.offering_id
-       WHERE a.beacon_token_hash=$1 AND a.status='active' AND a.ends_at>now() AND e.student_id=$2`,
+      `SELECT a.id,a.beacon_transport FROM attendance_sessions a JOIN student_enrollments e ON e.offering_id=a.offering_id
+       WHERE a.beacon_token_hash=$1 AND a.beacon_id IS NULL AND a.status='active' AND a.ends_at>now() AND e.student_id=$2`,
       [sha256(code), studentId]
     );
-    if (legacy.rowCount) return { sessionId: legacy.rows[0].id, proof: "session_token" };
+    if (legacy.rowCount) return { sessionId: legacy.rows[0].id, proof: legacy.rows[0].beacon_transport === "bluetooth" ? "direct_ble" : "session_token" };
     return null;
   };
 
@@ -1126,6 +1192,24 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     res.status(201).json({ attendance: result });
   }));
 
+  app.post("/api/attendance/sessions/:id/cancel", authenticate, roles("teacher"), asyncRoute(async (req, res) => {
+    const cancelled = await db.transaction(async (client) => {
+      const before = await client.query(
+        "SELECT id,status,room,beacon_transport FROM attendance_sessions WHERE id=$1 AND teacher_id=$2 FOR UPDATE",
+        [req.params.id, req.user.id]
+      );
+      if (!before.rowCount) throw Object.assign(new Error("Session not found"), { status: 404, code: "SESSION_NOT_FOUND" });
+      if (before.rows[0].status !== "active") return before.rows[0];
+      const result = await client.query(
+        "UPDATE attendance_sessions SET status='cancelled',ends_at=LEAST(ends_at,now()),closed_at=now() WHERE id=$1 RETURNING id,status,room,beacon_transport",
+        [req.params.id]
+      );
+      await audit(client, req, "ATTENDANCE_SESSION_CANCELLED", "attendance_session", req.params.id, before.rows[0], result.rows[0]);
+      return result.rows[0];
+    });
+    res.json({ session: cancelled });
+  }));
+
   app.post("/api/attendance/sessions/:id/manual", authenticate, roles("teacher"), asyncRoute(async (req, res) => {
     if (!String(req.body.reason || "").trim()) return res.status(400).json({ error: "REASON_REQUIRED" });
     const result = await db.transaction(async (client) => {
@@ -1184,7 +1268,7 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
 
   /** The teacher's live screen polls this. It also auto-closes an expired session. */
   app.get("/api/attendance/sessions/:id/live", authenticate, roles("teacher"), asyncRoute(async (req, res) => {
-    const owned = await db.query("SELECT id,status,ends_at,beacon_id FROM attendance_sessions WHERE id=$1 AND teacher_id=$2", [req.params.id, req.user.id]);
+    const owned = await db.query("SELECT id,status,ends_at,beacon_id,beacon_transport FROM attendance_sessions WHERE id=$1 AND teacher_id=$2", [req.params.id, req.user.id]);
     if (!owned.rowCount) return res.status(404).json({ error: "SESSION_NOT_FOUND" });
     const row = owned.rows[0];
     if (row.status === "active" && new Date(row.ends_at).getTime() <= Date.now()) {
@@ -1200,7 +1284,12 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     if (row.beacon_id) {
       const found = await db.query("SELECT beacon_code,label,last_seen_at FROM beacons WHERE id=$1", [row.beacon_id]);
       const seen = found.rows[0]?.last_seen_at;
-      beacon = found.rows[0] ? { code: found.rows[0].beacon_code, label: found.rows[0].label, online: Boolean(seen && Date.now() - new Date(seen).getTime() < beaconOfflineSeconds * 1000) } : null;
+      beacon = found.rows[0] ? {
+        code: found.rows[0].beacon_code,
+        label: found.rows[0].label,
+        transport: row.beacon_transport,
+        online: row.beacon_transport === "bluetooth" || Boolean(seen && Date.now() - new Date(seen).getTime() < beaconOfflineSeconds * 1000)
+      } : null;
     }
     res.json({
       ...session,
@@ -1514,7 +1603,8 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
     const session = await db.query(
       `SELECT a.id, a.ends_at, su.name AS subject
        FROM attendance_sessions a JOIN course_offerings o ON o.id=a.offering_id JOIN subjects su ON su.id=o.subject_id
-       WHERE a.classroom_id=$1 AND a.beacon_id=$2 AND a.organization_id=$3 AND a.status='active' AND a.ends_at>now() ORDER BY a.starts_at DESC LIMIT 1`,
+       WHERE a.classroom_id=$1 AND a.beacon_id=$2 AND a.organization_id=$3 AND a.beacon_transport='wifi'
+         AND a.status='active' AND a.ends_at>now() ORDER BY a.starts_at DESC LIMIT 1`,
       [beacon.classroom_id, beacon.id, beacon.organization_id]
     );
     if (!session.rowCount) {
@@ -1711,9 +1801,11 @@ export function createProductionApp({ db, mailer = createMailer(), app = express
             [req.user.organization_id, email, rollNumber, fullName, hashPassword(password)]
           );
           if (!user.rowCount) { outcome.skipped += 1; return; }
+          const batchYear = String(row.batch_year || row.batch || '').trim() || String(row.academic_year || '').trim();
+          if (!/^\d{2,4}-\d{2,4}$/.test(batchYear)) throw new Error('batch_year is required, for example 2025-26');
           await client.query(
-            "INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,phone) VALUES($1,$2,$3,$4,$5,$6)",
-            [user.rows[0].id, rollNumber, section.rows[0].branch_id, section.rows[0].semester_id, section.rows[0].section_id, row.phone || null]
+            "INSERT INTO students(user_id,roll_number,branch_id,semester_id,section_id,batch_year,phone) VALUES($1,$2,$3,$4,$5,$6,$7)",
+            [user.rows[0].id, rollNumber, section.rows[0].branch_id, section.rows[0].semester_id, section.rows[0].section_id, batchYear, row.phone || null]
           );
           if (row.barcode) {
             await client.query(

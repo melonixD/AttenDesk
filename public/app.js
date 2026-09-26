@@ -22,11 +22,13 @@ const state = {
   reportFilters: {},
   correctionFilters: {}
 };
+state.pendingManualIds = new Set();
 let livePollTimer = null;
 let refreshInFlight = null;
 
 const ATTENDESK_BLE_SERVICE = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
 const ATTENDESK_TOKEN_CHARACTERISTIC = 'd953c2d0-34d8-4d7b-94a7-2f54b42ea6d1';
+const ATTENDESK_IDENTITY_CHARACTERISTIC = 'b61f7d38-4b2b-47e9-9b55-f5e50f8d4a31';
 let cancelActiveBarcodeScan = null;
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -688,7 +690,51 @@ async function renderRegistrations() {
 async function renderPeople() {
   heading('Directory', 'People and credentials');
   const rows = await api(`/api/admin/people?role=${state.peopleRole}`);
-  $('#page-content').innerHTML = `<div class="tab-row"><button class="tab ${state.peopleRole === 'student' ? 'active' : ''}" data-people-role="student">Students</button><button class="tab ${state.peopleRole === 'teacher' ? 'active' : ''}" data-people-role="teacher">Teachers</button></div><article class="panel"><div class="panel-header"><div><span class="eyebrow">Approved accounts</span><h2>${titleCase(state.peopleRole)} directory</h2></div><div class="panel-actions"><button class="secondary compact" data-open-import="${state.peopleRole}s">Import CSV</button><button class="primary compact" data-add-person="${state.peopleRole}">Add ${state.peopleRole}</button><span class="pill">${rows.length} records</span></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>Person</th><th>Identifier</th><th>Academic assignment</th><th>${state.peopleRole === 'student' ? 'ID and device' : 'Status'}</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><td><div class="person"><span class="person-avatar">${escapeHtml(row.full_name[0])}</span><div><strong>${escapeHtml(row.full_name)}</strong><br /><small>${escapeHtml(row.email)}</small></div></div></td><td>${escapeHtml(row.roll_number || row.employee_code)}</td><td>${escapeHtml([row.branch, row.semester && `Sem ${row.semester}`, row.section && `Section ${row.section}`].filter(Boolean).join(' · ') || '—')}</td><td>${state.peopleRole === 'student' ? `${row.barcode_status ? `Barcode ••••${escapeHtml(row.barcode_last_four)}` : '<span class="warning-text">No barcode</span>'}<br /><small>${escapeHtml(row.device_name || 'No device')} · ${titleCase(row.status)}</small>` : titleCase(row.status)}</td><td>${state.peopleRole === 'student' ? `<button class="table-action" data-register-barcode="${row.id}" data-student-name="${escapeHtml(row.full_name)}">Barcode</button> ` : ''}<button class="table-action" data-reset-user-password="${row.id}" data-user-name="${escapeHtml(row.full_name)}">Password</button> <button class="table-action ${row.status==='active'?'danger':''}" data-user-status="${row.id}" data-current-status="${row.status}">${row.status==='active'?'Suspend':'Reactivate'}</button></td></tr>`).join('') || emptyTableRow(`No ${state.peopleRole}s yet. Use the Add ${state.peopleRole} button to create one.`, 5)}</tbody></table></div></article>`;
+  const tabs = [['student', 'Students'], ['teacher', 'Teachers'], ['admin', 'Administrators']]
+    .map(([role, label]) => `<button class="tab ${state.peopleRole === role ? 'active' : ''}" data-people-role="${role}">${label}</button>`).join('');
+  const importButton = state.peopleRole === 'admin' ? '' : `<button class="secondary compact" data-open-import="${state.peopleRole}s">Import CSV</button>`;
+  const scanButton = state.peopleRole === 'student' ? '<button class="secondary compact" data-test-barcode>Test barcode scanner</button>' : '';
+  const directory = state.peopleRole === 'student' ? studentDirectoryMarkup(rows) : peopleTableMarkup(rows, state.peopleRole);
+  $('#page-content').innerHTML = `<div class="tab-row">${tabs}</div><article class="panel"><div class="panel-header"><div><span class="eyebrow">Approved accounts</span><h2>${state.peopleRole === 'admin' ? 'Administrator' : titleCase(state.peopleRole)} directory</h2></div><div class="panel-actions">${scanButton}${importButton}<button class="primary compact" data-add-person="${state.peopleRole}">Add ${state.peopleRole === 'admin' ? 'administrator' : state.peopleRole}</button><span class="pill">${rows.length} records</span></div></div>${directory}</article>`;
+}
+
+function studentYear(row) {
+  const number = Number(row.semester || 0);
+  const year = Math.max(1, Math.ceil(number / 2));
+  return { order: year, label: year === 1 ? '1st year' : year === 2 ? '2nd year' : year === 3 ? '3rd year' : year === 4 ? 'Final year' : `Year ${year}` };
+}
+
+function personActions(row, role) {
+  const barcode = role === 'student' ? `<button class="table-action" data-register-barcode="${row.id}" data-student-name="${escapeHtml(row.full_name)}">Barcode</button> <button class="table-action" data-edit-student-academic="${row.id}" data-student-name="${escapeHtml(row.full_name)}" data-section-id="${row.section_id}" data-batch-year="${escapeHtml(row.batch_year)}">Placement</button> ` : '';
+  const status = row.id === state.user.id ? '<span class="pill">Current account</span>' : `<button class="table-action ${row.status === 'active' ? 'danger' : ''}" data-user-status="${row.id}" data-current-status="${row.status}">${row.status === 'active' ? 'Suspend' : 'Reactivate'}</button>`;
+  return `${barcode}<button class="table-action" data-reset-user-password="${row.id}" data-user-name="${escapeHtml(row.full_name)}">Password</button> ${status}`;
+}
+
+function studentRowsMarkup(rows) {
+  return rows.map(row => `<tr><td><div class="person"><span class="person-avatar">${escapeHtml(row.full_name[0])}</span><div><strong>${escapeHtml(row.full_name)}</strong><br /><small>${escapeHtml(row.email)}</small></div></div></td><td>${escapeHtml(row.roll_number)}</td><td>${escapeHtml(`Semester ${row.semester} · Section ${row.section}`)}</td><td>${row.barcode_status ? `Barcode ••••${escapeHtml(row.barcode_last_four)}` : '<span class="warning-text">No barcode</span>'}<br /><small>${escapeHtml(row.device_name || 'No device')} · ${titleCase(row.status)}</small></td><td>${personActions(row, 'student')}</td></tr>`).join('');
+}
+
+function studentDirectoryMarkup(rows) {
+  if (!rows.length) return emptyState('No students yet', 'Use Add student or Import CSV to create the first batch.', 'S');
+  const branches = new Map();
+  rows.forEach(row => {
+    const branchKey = row.branch_id || row.branch;
+    if (!branches.has(branchKey)) branches.set(branchKey, { name: row.branch, code: row.branch_code, years: new Map(), count: 0 });
+    const branch = branches.get(branchKey);
+    branch.count += 1;
+    const year = studentYear(row);
+    if (!branch.years.has(year.order)) branch.years.set(year.order, { label: year.label, batches: new Map(), count: 0 });
+    const yearGroup = branch.years.get(year.order);
+    yearGroup.count += 1;
+    const batch = row.batch_year || row.academic_year || 'Unassigned batch';
+    if (!yearGroup.batches.has(batch)) yearGroup.batches.set(batch, []);
+    yearGroup.batches.get(batch).push(row);
+  });
+  return `<div class="student-directory-tree">${[...branches.values()].sort((a, b) => a.name.localeCompare(b.name)).map((branch, branchIndex) => `<details class="directory-branch" ${branchIndex === 0 ? 'open' : ''}><summary><span class="directory-icon">${escapeHtml((branch.code || branch.name).slice(0, 2).toUpperCase())}</span><span><strong>${escapeHtml(branch.name)}</strong><small>${branch.count} students</small></span><i>${icon('arrow', 15)}</i></summary><div class="directory-years">${[...branch.years.entries()].sort(([a], [b]) => a - b).map(([, year]) => `<details class="directory-year"><summary><span><strong>${escapeHtml(year.label)}</strong><small>${year.count} students</small></span><i>${icon('arrow', 14)}</i></summary><div class="directory-batches">${[...year.batches.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([batch, students]) => `<section class="directory-batch"><header><div><span class="eyebrow">Admission batch</span><h3>${escapeHtml(batch)}</h3></div><span class="pill">${students.length} students</span></header><div class="table-wrap"><table class="data-table"><thead><tr><th>Person</th><th>Roll number</th><th>Class</th><th>ID and device</th><th>Action</th></tr></thead><tbody>${studentRowsMarkup(students)}</tbody></table></div></section>`).join('')}</div></details>`).join('')}</div></details>`).join('')}</div>`;
+}
+
+function peopleTableMarkup(rows, role) {
+  return `<div class="table-wrap"><table class="data-table"><thead><tr><th>Person</th><th>Identifier</th><th>${role === 'teacher' ? 'Branch' : 'Access'}</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows.map(row => `<tr><td><div class="person"><span class="person-avatar">${escapeHtml(row.full_name[0])}</span><div><strong>${escapeHtml(row.full_name)}</strong><br /><small>${escapeHtml(row.email)}</small></div></div></td><td>${escapeHtml(row.employee_code || row.username || '—')}</td><td>${escapeHtml(role === 'teacher' ? (row.branch || 'College-wide') : 'Full administration')}</td><td>${titleCase(row.status)}</td><td>${personActions(row, role)}</td></tr>`).join('') || emptyTableRow(`No ${role}s yet.`, 5)}</tbody></table></div>`;
 }
 
 async function renderAcademic() {
@@ -816,6 +862,17 @@ function openStartSessionDialog(offeringId, subject, defaultRoom) {
     <h2>${escapeHtml(subject)}</h2>
     <form id="start-session-form">
       <label>Classroom<input name="room" value="${escapeHtml(defaultRoom || '')}" required autocomplete="off" /></label>
+      <span class="field-label">ESP32 connection</span>
+      <div class="beacon-mode-grid">
+        <label class="beacon-mode selected">
+          <input type="radio" name="beaconTransport" value="wifi" checked />
+          <span><strong>Automatic Wi-Fi</strong><small>ESP32 fetches rotating codes from Attendesk</small></span>
+        </label>
+        <label class="beacon-mode${webBluetoothSupported() ? '' : ' disabled'}">
+          <input type="radio" name="beaconTransport" value="bluetooth" ${webBluetoothSupported() ? '' : 'disabled'} />
+          <span><strong>Direct Bluetooth</strong><small>${webBluetoothSupported() ? 'Works when classroom Wi-Fi is down' : 'Requires Chrome or Edge with Web Bluetooth'}</small></span>
+        </label>
+      </div>
       <span class="field-label">Duration</span>
       <div class="duration-grid">
         ${[1, 2, 3, 5].map((minutes, index) => `
@@ -830,7 +887,7 @@ function openStartSessionDialog(offeringId, subject, defaultRoom) {
       </div>
       <label id="custom-duration-field" class="hidden">Seconds<input name="customSeconds" type="number" min="30" max="600" value="180" /></label>
       <button class="primary" type="submit">Open attendance window</button>
-      <p class="field-note">The ESP32 in this room starts broadcasting a code that changes every 30 seconds. Students must be inside to capture it.</p>
+      <p id="beacon-mode-note" class="field-note">The ESP32 uses Wi-Fi to fetch a code that changes every 30 seconds.</p>
     </form>`);
 
   $$('#start-session-form input[name="minutes"]').forEach(input => input.addEventListener('change', () => {
@@ -838,9 +895,17 @@ function openStartSessionDialog(offeringId, subject, defaultRoom) {
     $('#custom-duration-field').classList.toggle('hidden', input.value !== 'custom' || !input.checked);
   }));
 
+  $$('#start-session-form input[name="beaconTransport"]').forEach(input => input.addEventListener('change', () => {
+    $$('.beacon-mode').forEach(option => option.classList.toggle('selected', option.contains(input) && input.checked));
+    $('#beacon-mode-note').textContent = input.value === 'bluetooth'
+      ? 'You will choose the room ESP32. The browser sends the session directly over Bluetooth; the ESP32 does not need Wi-Fi.'
+      : 'The ESP32 uses Wi-Fi to fetch a code that changes every 30 seconds.';
+  }));
+
   $('#start-session-form').addEventListener('submit', async event => {
     event.preventDefault();
     const button = event.submitter;
+    let directBeacon = null;
     setButtonBusy(button, true, 'Opening…');
     try {
       const data = new FormData(event.target);
@@ -848,10 +913,27 @@ function openStartSessionDialog(offeringId, subject, defaultRoom) {
       const durationSeconds = choice === 'custom'
         ? Math.max(30, Math.min(600, Number(data.get('customSeconds')) || 180))
         : Number(choice) * 60;
+      const beaconTransport = data.get('beaconTransport') === 'bluetooth' ? 'bluetooth' : 'wifi';
+      if (beaconTransport === 'bluetooth') {
+        setButtonBusy(button, true, 'Choose ESP32…');
+        directBeacon = await connectTeacherBeacon();
+        setButtonBusy(button, true, 'Opening…');
+      }
       const session = await api('/api/attendance/sessions', {
         method: 'POST',
-        body: { offeringId, room: data.get('room'), durationSeconds }
+        body: { offeringId, room: data.get('room'), durationSeconds, beaconTransport, beaconCode: directBeacon?.beaconCode }
       });
+      if (beaconTransport === 'bluetooth') {
+        try {
+          setButtonBusy(button, true, 'Sending to ESP32…');
+          await provisionTeacherBeacon(directBeacon, session.directProvisioning);
+        } catch (provisionError) {
+          await api(`/api/attendance/sessions/${session.id}/cancel`, { method: 'POST', body: {} }).catch(() => null);
+          throw provisionError;
+        } finally {
+          if (directBeacon?.device?.gatt?.connected) directBeacon.device.gatt.disconnect();
+        }
+      }
       closeModal();
       state.liveSession = session;
       if (session.beaconWarning) toast(session.beaconWarning);
@@ -863,9 +945,48 @@ function openStartSessionDialog(offeringId, subject, defaultRoom) {
       }
       toast(error.message || 'The attendance window could not be opened.');
     } finally {
+      if (directBeacon?.device?.gatt?.connected) directBeacon.device.gatt.disconnect();
       setButtonBusy(button, false);
     }
   }, { once: true });
+}
+
+async function connectTeacherBeacon() {
+  if (!webBluetoothSupported()) throw new Error('Direct Bluetooth requires Chrome or Edge on Android, Windows, macOS or ChromeOS over HTTPS.');
+  const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [ATTENDESK_BLE_SERVICE] }] });
+  const server = await device.gatt.connect();
+  try {
+    const service = await server.getPrimaryService(ATTENDESK_BLE_SERVICE);
+    const identity = await service.getCharacteristic(ATTENDESK_IDENTITY_CHARACTERISTIC);
+    const beaconCode = new TextDecoder().decode(identity.value || await identity.readValue()).replace(/\0/g, '').trim();
+    if (!beaconCode) throw new Error('This ESP32 is running old firmware. Flash the dual-mode Attendesk firmware first.');
+    const tokenCharacteristic = await service.getCharacteristic(ATTENDESK_TOKEN_CHARACTERISTIC);
+    return { device, tokenCharacteristic, beaconCode };
+  } catch (error) {
+    if (device.gatt.connected) device.gatt.disconnect();
+    if (error.name === 'NotFoundError') throw new Error('This ESP32 is running old firmware. Flash the dual-mode Attendesk firmware first.');
+    throw error;
+  }
+}
+
+async function provisionTeacherBeacon(connection, provisioning) {
+  const codes = Array.isArray(provisioning?.codes) ? provisioning.codes : [];
+  if (!connection?.tokenCharacteristic || provisioning?.version !== 1 || !codes.length || codes.length > 22 || codes.some(code => !/^[a-f0-9]{16}$/.test(code))) {
+    throw new Error('Attendesk did not provide a valid Bluetooth provisioning package.');
+  }
+  const payload = new Uint8Array(6 + codes.length * 8);
+  const view = new DataView(payload.buffer);
+  payload[0] = 1;
+  payload[1] = codes.length;
+  view.setUint16(2, Math.max(1, Math.min(30, Number(provisioning.firstCodeSeconds) || 30)), true);
+  view.setUint16(4, Math.max(30, Math.min(600, Number(provisioning.totalSeconds) || 180)), true);
+  codes.forEach((code, codeIndex) => {
+    for (let byteIndex = 0; byteIndex < 8; byteIndex += 1) {
+      payload[6 + codeIndex * 8 + byteIndex] = Number.parseInt(code.slice(byteIndex * 2, byteIndex * 2 + 2), 16);
+    }
+  });
+  if (connection.tokenCharacteristic.writeValueWithResponse) await connection.tokenCharacteristic.writeValueWithResponse(payload);
+  else await connection.tokenCharacteristic.writeValue(payload);
 }
 
 /* ---------------------------------------------------------------------------
@@ -900,6 +1021,7 @@ const formatClock = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2,
 
 function liveSessionMarkup(live) {
   const active = live.status === 'active' && live.secondsRemaining > 0;
+  const directBluetooth = live.beacon?.transport === 'bluetooth';
   return `
     <section class="live-header ${active ? 'live-active' : 'live-ended'}">
       <div>
@@ -915,8 +1037,8 @@ function liveSessionMarkup(live) {
 
     <article class="panel">
       <div class="panel-header">
-        <div><span class="eyebrow">Classroom beacon</span><h2 id="beacon-state">${live.beacon ? (live.beacon.online ? `${escapeHtml(live.beacon.label)} is broadcasting` : `${escapeHtml(live.beacon.label)} is not responding`) : 'No ESP32 registered for this room'}</h2></div>
-        <span class="pill ${live.beacon?.online ? '' : 'warn'}" id="beacon-pill">${live.beacon ? (live.beacon.online ? 'Online' : 'Offline') : 'None'}</span>
+        <div><span class="eyebrow">Classroom beacon</span><h2 id="beacon-state">${live.beacon ? (directBluetooth ? `${escapeHtml(live.beacon.label)} · direct Bluetooth` : live.beacon.online ? `${escapeHtml(live.beacon.label)} is broadcasting` : `${escapeHtml(live.beacon.label)} is not responding`) : 'No ESP32 registered for this room'}</h2></div>
+        <span class="pill ${live.beacon?.online ? '' : 'warn'}" id="beacon-pill">${live.beacon ? (directBluetooth ? 'Bluetooth' : live.beacon.online ? 'Online' : 'Offline') : 'None'}</span>
       </div>
       ${live.beacon ? '' : '<p class="ble-explainer">Students cannot detect this room until an administrator assigns an ESP32 beacon to it in Rooms &amp; beacons.</p>'}
     </article>
@@ -935,18 +1057,21 @@ function liveSessionMarkup(live) {
 
 function rosterMarkup(roster) {
   const filter = state.rosterFilter.trim().toLowerCase();
-  const rows = roster.filter(student =>
-    !filter || student.full_name.toLowerCase().includes(filter) || String(student.roll_number).toLowerCase().includes(filter));
+  const rows = [...roster]
+    .sort((left, right) => left.full_name.localeCompare(right.full_name, undefined, { sensitivity: 'base' }) || String(left.roll_number).localeCompare(String(right.roll_number)))
+    .filter(student => !filter || student.full_name.toLowerCase().includes(filter) || String(student.roll_number).toLowerCase().includes(filter));
   if (!rows.length) return '<div class="empty">No student matches that search.</div>';
-  return rows.map(student => `
-    <div class="roster-row ${student.status === 'present' ? 'is-present' : ''}">
-      <span class="roster-mark">${student.status === 'present' ? icon('check', 15) : ''}</span>
+  const sessionActive = state.liveSession?.status === 'active' && Number(state.liveSession?.secondsRemaining) > 0;
+  return rows.map(student => {
+    const present = student.status === 'present';
+    const pending = state.pendingManualIds.has(student.id);
+    return `
+    <div class="roster-row ${present ? 'is-present' : ''}">
+      <button class="roster-attendance-toggle ${present ? 'is-checked' : ''} ${pending ? 'is-loading' : ''}" data-manual-mark="${student.id}" data-student-name="${escapeHtml(student.full_name)}" data-current="${student.status}" aria-label="${present ? 'Unmark' : 'Mark'} ${escapeHtml(student.full_name)} attendance" title="${present ? 'Click to unmark attendance' : 'Click to mark attendance'}" ${pending || !sessionActive ? 'disabled' : ''}>${present && !pending ? icon('check', 17) : ''}</button>
       <div class="roster-identity"><strong>${escapeHtml(student.full_name)}</strong><small>${escapeHtml(student.roll_number)}</small></div>
-      <span class="roster-method">${student.status === 'present' ? methodLabel(student.method) : 'Not marked'}</span>
-      <button class="table-action" data-manual-mark="${student.id}" data-student-name="${escapeHtml(student.full_name)}" data-current="${student.status}">
-        ${student.status === 'present' ? 'Mark absent' : 'Mark present'}
-      </button>
-    </div>`).join('');
+      <span class="roster-method">${present ? methodLabel(student.method) : 'Not marked'}</span>
+    </div>`;
+  }).join('');
 }
 
 const methodLabel = (method) => ({
@@ -971,7 +1096,7 @@ function paintLiveSession(live) {
   if (bar) bar.style.width = `${live.total ? (live.present / live.total) * 100 : 0}%`;
   const pill = $('#beacon-pill');
   if (pill && live.beacon) {
-    pill.textContent = live.beacon.online ? 'Online' : 'Offline';
+    pill.textContent = live.beacon.transport === 'bluetooth' ? 'Bluetooth' : live.beacon.online ? 'Online' : 'Offline';
     pill.classList.toggle('warn', !live.beacon.online);
   }
   const list = $('#roster-list');
@@ -986,38 +1111,34 @@ function paintLiveSession(live) {
   }
 }
 
-function openManualMarkDialog(studentId, studentName, currentStatus) {
+async function toggleManualAttendance(button) {
+  const studentId = button.dataset.manualMark;
+  const studentName = button.dataset.studentName;
+  const currentStatus = button.dataset.current;
   const nextStatus = currentStatus === 'present' ? 'absent' : 'present';
-  openModal(`
-    <span class="eyebrow">Manual correction</span>
-    <h2>${escapeHtml(studentName)}</h2>
-    <p class="modal-copy">Marking this student <strong>${nextStatus}</strong>. Every manual change is recorded against your account with the reason you give.</p>
-    <form id="manual-mark-form">
-      <label>Reason<input name="reason" required minlength="4" placeholder="Phone battery dead, damaged ID card, …" autofocus /></label>
-      <button class="primary" type="submit">Record ${nextStatus}</button>
-    </form>`);
-  $('#manual-mark-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    const button = event.submitter;
-    setButtonBusy(button, true, 'Saving…');
-    try {
-      await api(`/api/attendance/sessions/${state.liveSession.id}/manual`, {
-        method: 'POST',
-        body: { studentId, status: nextStatus, reason: new FormData(event.target).get('reason') }
-      });
-      closeModal();
-      toast(`${studentName} marked ${nextStatus}`);
-      const live = await api(`/api/attendance/sessions/${state.liveSession.id}/live`);
-      state.liveSession = live;
-      paintLiveSession(live);
-      const list = $('#roster-list');
-      if (list) list.innerHTML = rosterMarkup(live.roster);
-    } catch (error) {
-      toast(error.message || 'The correction could not be saved.');
-    } finally {
-      setButtonBusy(button, false);
-    }
-  }, { once: true });
+  state.pendingManualIds.add(studentId);
+  const list = $('#roster-list');
+  if (list) list.innerHTML = rosterMarkup(state.liveSession.roster);
+  try {
+    await api(`/api/attendance/sessions/${state.liveSession.id}/manual`, {
+      method: 'POST',
+      body: {
+        studentId,
+        status: nextStatus,
+        reason: nextStatus === 'present' ? 'Marked present by teacher from live roster' : 'Unmarked by teacher from live roster'
+      }
+    });
+    const live = await api(`/api/attendance/sessions/${state.liveSession.id}/live`);
+    state.liveSession = live;
+    toast(`${studentName} ${nextStatus === 'present' ? 'marked present' : 'unmarked'}`);
+  } catch (error) {
+    toast(error.message || 'Attendance could not be updated.');
+  } finally {
+    state.pendingManualIds.delete(studentId);
+    const currentList = $('#roster-list');
+    if (currentList) currentList.innerHTML = rosterMarkup(state.liveSession.roster);
+    paintLiveSession(state.liveSession);
+  }
 }
 
 /* ------------------------------- Rooms & beacons (admin) ----------------- */
@@ -1123,7 +1244,7 @@ async function discoverWebBluetoothClass() {
   }
 }
 
-async function scanBarcodeWithCamera() {
+async function scanBarcodeWithCamera(options = {}) {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access is unavailable. Open Attendesk over HTTPS.');
   if (!('BarcodeDetector' in window)) throw new Error('Live barcode scanning requires current Chrome on Android.');
   const supported = await BarcodeDetector.getSupportedFormats();
@@ -1131,7 +1252,7 @@ async function scanBarcodeWithCamera() {
   if (!formats.length) throw new Error('This browser cannot read the barcode format used by Attendesk.');
   const detector = new BarcodeDetector({ formats });
   const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-  openModal(`<span class="eyebrow">ID verification</span><h2>Scan your college ID card</h2><div class="barcode-camera"><video id="barcode-video" playsinline muted></video><div class="scan-frame"><i></i></div></div><p id="barcode-status" class="ble-explainer">Place the printed barcode inside the frame. Attendance is submitted only after Bluetooth and barcode verification.</p>`);
+  openModal(`<span class="eyebrow">${escapeHtml(options.eyebrow || 'ID verification')}</span><h2>${escapeHtml(options.title || 'Scan your college ID card')}</h2><div class="barcode-camera"><video id="barcode-video" playsinline muted></video><div class="scan-frame"><i></i></div></div><p id="barcode-status" class="ble-explainer">${escapeHtml(options.description || 'Place the printed barcode inside the frame. Attendance is submitted only after Bluetooth and barcode verification.')}</p>`);
   const video = $('#barcode-video');
   video.srcObject = stream;
   await video.play();
@@ -1223,10 +1344,14 @@ async function openAddPersonDialog(role) {
     return;
   }
   const domain = String(state.user.email || '').split('@')[1] || 'hbtu.ac.in';
-  const roleFields = role === 'teacher'
+  const roleFields = role === 'admin'
+    ? `<div class="field-grid"><label>Admin username<input name="username" required autocomplete="off" placeholder="akshat.admin" /></label><label>Initial password<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="Letters and numbers" /></label></div>`
+    : role === 'teacher'
     ? `<div class="field-grid"><label>Employee code<input name="employeeCode" required autocomplete="off" placeholder="FT-EMP-01" /></label><label>Branch<select name="branchId"><option value="">College-wide / optional</option>${activeBranches.map(row => `<option value="${row.id}">${escapeHtml(row.code)} · ${escapeHtml(row.name)}</option>`).join('')}</select></label></div><label>Initial password<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters with letters and numbers" /></label>`
-    : `<div class="field-grid"><label>Roll number<input name="rollNumber" required autocomplete="off" /></label><label>Class section<select name="sectionId" id="person-section" required>${activeSections.map(row => `<option value="${row.id}" data-branch-id="${row.branch_id}" data-semester-id="${row.semester_id}">${escapeHtml(row.branch_code)} · Semester ${row.semester_number} · Section ${escapeHtml(row.name)}</option>`).join('')}</select></label></div><div class="field-grid"><label>ID-card barcode<input name="barcode" minlength="4" autocomplete="off" placeholder="Optional now" /></label><label>Initial password<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters with letters and numbers" /></label></div>`;
-  openModal(`<span class="eyebrow">Direct account creation</span><h2>Add ${escapeHtml(role)}</h2><form id="person-form"><input type="hidden" name="role" value="${role}" /><div class="field-grid"><label>Full name<input name="fullName" required autocomplete="name" /></label><label>College email<input name="email" type="email" required placeholder="name@${escapeHtml(domain)}" autocomplete="email" /></label></div><label>Phone number<input name="phone" inputmode="tel" autocomplete="tel" placeholder="Optional" /></label>${roleFields}<button class="primary" type="submit">Create ${escapeHtml(role)}</button><p class="field-note">${role === 'teacher' ? 'The employee code becomes the teacher username.' : 'The student uses this full name, roll number and password in the Android app.'}</p></form>`);
+    : `<div class="field-grid"><label>Roll number<input name="rollNumber" required autocomplete="off" /></label><label>Admission batch<input name="batchYear" required pattern="[0-9]{2,4}-[0-9]{2,4}" placeholder="2025-26" /></label></div><label>Class section<select name="sectionId" id="person-section" required>${activeSections.map(row => `<option value="${row.id}" data-branch-id="${row.branch_id}" data-semester-id="${row.semester_id}">${escapeHtml(row.branch_code)} · Semester ${row.semester_number} · Section ${escapeHtml(row.name)}</option>`).join('')}</select></label><div class="field-grid"><label>ID-card barcode<input name="barcode" minlength="4" autocomplete="off" placeholder="Optional now" /></label><label>Initial password<input name="password" type="password" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters with letters and numbers" /></label></div>`;
+  const phoneField = role === 'admin' ? '' : '<label>Phone number<input name="phone" inputmode="tel" autocomplete="tel" placeholder="Optional" /></label>';
+  const roleNote = role === 'admin' ? 'This account receives full college administration access. Keep at least one active administrator.' : role === 'teacher' ? 'The employee code becomes the teacher username.' : 'The student uses this full name, roll number and password in the Android app.';
+  openModal(`<span class="eyebrow">Direct account creation</span><h2>Add ${escapeHtml(role === 'admin' ? 'administrator' : role)}</h2><form id="person-form"><input type="hidden" name="role" value="${role}" /><div class="field-grid"><label>Full name<input name="fullName" required autocomplete="name" /></label><label>College email<input name="email" type="email" required placeholder="name@${escapeHtml(domain)}" autocomplete="email" /></label></div>${phoneField}${roleFields}<button class="primary" type="submit">Create ${escapeHtml(role === 'admin' ? 'administrator' : role)}</button><p class="field-note">${roleNote}</p></form>`);
   $('#person-form').addEventListener('submit', async formEvent => {
     formEvent.preventDefault();
     const button = formEvent.submitter;
@@ -1273,8 +1398,8 @@ function parseCsv(text) {
 const importDefinitions = {
   students: {
     title: 'Students', description: 'Accounts, class assignment and optional ID-card barcode',
-    headers: 'full_name,college_email,roll_number,branch_code,semester,section_name,phone,barcode,password',
-    sample: 'Example Student,student@hbtu.ac.in,250107001,FT,1,A,9876543210,1234567890,StudentPass99'
+    headers: 'full_name,college_email,roll_number,branch_code,semester,section_name,batch_year,phone,barcode,password',
+    sample: 'Example Student,student@hbtu.ac.in,250107001,FT,1,A,2025-26,9876543210,1234567890,StudentPass99'
   },
   teachers: {
     title: 'Teachers', description: 'Faculty accounts, employee codes and initial passwords',
@@ -1355,6 +1480,46 @@ function openResetPasswordDialog(userId, userName) {
     } catch (error) { toast(error.message || 'Password reset failed'); }
     finally { setButtonBusy(button, false); }
   }, { once: true });
+}
+
+async function openStudentAcademicDialog(button) {
+  const sections = (await api('/api/admin/sections')).filter(row => row.active);
+  openModal(`<span class="eyebrow">Student placement</span><h2>${escapeHtml(button.dataset.studentName)}</h2><form id="student-academic-form"><label>Branch, year and section<select name="sectionId" required>${sections.map(row => `<option value="${row.id}" ${row.id === button.dataset.sectionId ? 'selected' : ''}>${escapeHtml(row.branch_name)} · ${studentYear({ semester: row.semester_number }).label} · Semester ${row.semester_number} · Section ${escapeHtml(row.name)}</option>`).join('')}</select></label><label>Admission batch<input name="batchYear" required pattern="[0-9]{2,4}-[0-9]{2,4}" value="${escapeHtml(button.dataset.batchYear || '')}" placeholder="2025-26" /></label><button class="primary" type="submit">Save placement</button><p class="field-note">The year is derived from the selected semester. The admission batch stays unchanged as the student progresses.</p></form>`);
+  $('#student-academic-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const submit = event.submitter;
+    setButtonBusy(submit, true, 'Saving…');
+    try {
+      await api(`/api/admin/students/${button.dataset.editStudentAcademic}/academic`, { method: 'PATCH', body: Object.fromEntries(new FormData(event.target).entries()) });
+      closeModal(); toast('Student placement updated'); await navigate('people');
+    } catch (error) { toast(error.message); }
+    finally { setButtonBusy(submit, false); }
+  }, { once: true });
+}
+
+async function verifyAdminBarcode(barcode) {
+  const result = await api('/api/admin/barcodes/verify', { method: 'POST', body: { barcode } });
+  const student = result.student;
+  openModal(`<span class="eyebrow">Scanner test passed</span><h2>Barcode matched</h2><div class="barcode-match"><span class="person-avatar">${escapeHtml(student.full_name[0])}</span><div><strong>${escapeHtml(student.full_name)}</strong><small>${escapeHtml(student.roll_number)} · ${escapeHtml(student.branch)} · Semester ${student.semester} · Section ${escapeHtml(student.section)}</small><small>Batch ${escapeHtml(student.batch_year)} · barcode ••••${escapeHtml(student.barcode_last_four)}</small></div></div><p class="modal-copy">This confirms that the printed barcode can be read and matches the protected registration stored for this student.</p><button class="primary" data-action="close-modal">Done</button>`);
+}
+
+async function testAdminBarcodeScanner() {
+  try {
+    const barcode = await scanBarcodeWithCamera({ eyebrow: 'Admin diagnostic', title: 'Test a student ID barcode', description: 'Place the printed student ID barcode inside the frame. This test does not mark attendance.' });
+    closeModal();
+    await verifyAdminBarcode(barcode);
+  } catch (error) {
+    if (error.message === 'Barcode scan cancelled.') return;
+    openModal(`<span class="eyebrow">Admin diagnostic</span><h2>Enter barcode for testing</h2><p class="modal-copy">${escapeHtml(error.message)} You can still test the registered value with a USB scanner or keyboard entry.</p><form id="manual-barcode-test-form"><label>Barcode value<input name="barcode" required minlength="4" autofocus autocomplete="off" /></label><button class="primary">Test barcode</button></form>`);
+    $('#manual-barcode-test-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const submit = event.submitter;
+      setButtonBusy(submit, true, 'Checking…');
+      try { await verifyAdminBarcode(new FormData(event.target).get('barcode')); }
+      catch (verifyError) { toast(verifyError.message); }
+      finally { setButtonBusy(submit, false); }
+    }, { once: true });
+  }
 }
 
 async function openRosterDialog(offeringId, courseName) {
@@ -1477,6 +1642,9 @@ document.addEventListener('click', async event => {
   }
   const resetPassword = event.target.closest('[data-reset-user-password]');
   if (resetPassword) return openResetPasswordDialog(resetPassword.dataset.resetUserPassword, resetPassword.dataset.userName);
+  const editStudentAcademic = event.target.closest('[data-edit-student-academic]');
+  if (editStudentAcademic) return openStudentAcademicDialog(editStudentAcademic).catch(error => toast(error.message));
+  if (event.target.closest('[data-test-barcode]')) return testAdminBarcodeScanner();
   const viewRoster = event.target.closest('[data-view-roster]');
   if (viewRoster) {
     setButtonBusy(viewRoster, true, 'Loading…');
@@ -1527,7 +1695,7 @@ document.addEventListener('click', async event => {
   }
   const manualMark = event.target.closest('[data-manual-mark]');
   if (manualMark) {
-    return openManualMarkDialog(manualMark.dataset.manualMark, manualMark.dataset.studentName, manualMark.dataset.current);
+    return toggleManualAttendance(manualMark);
   }
   const closeSession = event.target.closest('[data-close-session]');
   if (closeSession) {

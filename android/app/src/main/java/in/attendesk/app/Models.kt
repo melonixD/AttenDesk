@@ -25,6 +25,14 @@ data class AuthUser(val id: String, val fullName: String, val email: String, val
 
 data class LoginResult(val accessToken: String, val refreshToken: String, val user: AuthUser)
 
+data class AppUpdate(
+    val versionCode: Int,
+    val versionName: String,
+    val downloadUrl: String,
+    val required: Boolean,
+    val notes: String
+)
+
 data class SubjectAttendance(
     val subject: String,
     val subjectCode: String,

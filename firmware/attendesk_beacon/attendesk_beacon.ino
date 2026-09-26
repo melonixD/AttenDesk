@@ -1,9 +1,10 @@
 /* ===========================================================================
  * AttenDesk classroom beacon — ESP32 firmware
  * ---------------------------------------------------------------------------
- * One of these sits in each classroom. It holds no attendance secret of its
- * own. Every two seconds it asks the AttenDesk server "should I be
- * broadcasting, and if so, what?" and advertises exactly what it is told.
+ * One of these sits in each classroom and supports two teacher-selectable
+ * transports. In Wi-Fi mode it polls Attendesk for a rotating code. In direct
+ * Bluetooth mode a teacher provisions a short-lived session code through the
+ * GATT characteristic, so campus Wi-Fi is not required.
  *
  * The advertised value is a rotating 8-byte code that changes every 30
  * seconds. That is what makes this different from a beacon broadcasting a
@@ -41,12 +42,13 @@ static const char* ROOM_LABEL    = "AD-210"; // ASCII, at most 11 bytes (scan-re
 // Paste the PEM root CA for your HTTPS deployment here. Never disable TLS verification.
 static const char* ROOT_CA = R"PEM(PASTE_YOUR_ROOT_CA_CERTIFICATE_HERE)PEM";
 
-static const char* FIRMWARE_VERSION = "1.1.0";
+static const char* FIRMWARE_VERSION = "1.2.0";
 /* ------------------------------------------------------------------------ */
 
 // Must match ATTENDESK_BLE_SERVICE in public/app.js and BleSessionManager.kt.
 static const char* SERVICE_UUID        = "8d53dc1d-1db7-4cd3-868b-8a527460aa84";
 static const char* CHARACTERISTIC_UUID = "d953c2d0-34d8-4d7b-94a7-2f54b42ea6d1";
+static const char* IDENTITY_UUID       = "b61f7d38-4b2b-47e9-9b55-f5e50f8d4a31";
 
 static const uint32_t IDLE_POLL_MS     = 5000;
 static const uint32_t ACTIVE_POLL_MS   = 2000;
@@ -54,12 +56,28 @@ static const uint32_t WIFI_RETRY_MS    = 10000;
 
 NimBLEServer*         bleServer         = nullptr;
 NimBLECharacteristic* tokenCharacteristic = nullptr;
+NimBLECharacteristic* identityCharacteristic = nullptr;
 NimBLEAdvertising*    advertising       = nullptr;
 
 bool     advertisingNow = false;
 String   currentCode    = "";
 uint32_t nextPollAt     = 0;
 uint32_t pollInterval   = IDLE_POLL_MS;
+bool     directActive   = false;
+uint32_t directUntil    = 0;
+uint32_t directNextRotation = 0;
+uint8_t  directCodes[22][8];
+uint8_t  directCodeCount = 0;
+uint8_t  directCodeIndex = 0;
+
+static void handleProvisioningWrite(NimBLECharacteristic* characteristic);
+
+class ProvisioningCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& connInfo) override {
+    (void)connInfo;
+    handleProvisioningWrite(characteristic);
+  }
+};
 
 /* ---- helpers ------------------------------------------------------------ */
 
@@ -102,8 +120,15 @@ static void startBle() {
 
   bleServer = NimBLEDevice::createServer();
   NimBLEService* service = bleServer->createService(SERVICE_UUID);
-  tokenCharacteristic = service->createCharacteristic(CHARACTERISTIC_UUID, NIMBLE_PROPERTY::READ);
+  tokenCharacteristic = service->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE,
+    512
+  );
+  tokenCharacteristic->setCallbacks(new ProvisioningCallbacks());
   tokenCharacteristic->setValue("");
+  identityCharacteristic = service->createCharacteristic(IDENTITY_UUID, NIMBLE_PROPERTY::READ);
+  identityCharacteristic->setValue(BEACON_CODE);
   service->start();
 
   advertising = NimBLEDevice::getAdvertising();
@@ -112,7 +137,12 @@ static void startBle() {
   scan.addServiceUUID(NimBLEUUID(SERVICE_UUID));
   scan.setName(std::string(ROOM_LABEL).substr(0, 11));
   advertising->setScanResponseData(scan);
-  Serial.println("[ble] stack ready (idle, not advertising)");
+  NimBLEAdvertisementData idle;
+  idle.setFlags(0x06);
+  idle.addServiceUUID(NimBLEUUID(SERVICE_UUID));
+  advertising->setAdvertisementData(idle);
+  advertising->start();
+  Serial.println("[ble] stack ready (idle provisioning advertisement active)");
 }
 
 /**
@@ -146,7 +176,62 @@ static void stopAdvertising() {
   advertisingNow = false;
   currentCode = "";
   tokenCharacteristic->setValue("");
-  Serial.println("[ble] advertising stopped");
+  NimBLEAdvertisementData idle;
+  idle.setFlags(0x06);
+  idle.addServiceUUID(NimBLEUUID(SERVICE_UUID));
+  advertising->setAdvertisementData(idle);
+  advertising->start();
+  Serial.println("[ble] session advertisement stopped; provisioning remains discoverable");
+}
+
+static String encodedCode(const uint8_t* bytes) {
+  static const char hex[] = "0123456789abcdef";
+  char encoded[17];
+  for (size_t index = 0; index < 8; index++) {
+    encoded[index * 2] = hex[(bytes[index] >> 4) & 0x0f];
+    encoded[index * 2 + 1] = hex[bytes[index] & 0x0f];
+  }
+  encoded[16] = '\0';
+  return String(encoded);
+}
+
+/**
+ * Direct-Bluetooth payload written by the teacher browser:
+ *   byte 0      - protocol version (1)
+ *   byte 1      - rotating-code count (1..22)
+ *   bytes 2..3  - seconds remaining for the first code
+ *   bytes 4..5  - total session lifetime in seconds
+ *   remaining   - count consecutive raw 8-byte rotating codes
+ *
+ * A random or malicious token is harmless because the API accepts only the
+ * hash stored for the teacher's active session. The local expiry prevents a
+ * disconnected board from broadcasting an old valid token indefinitely.
+ */
+static void handleProvisioningWrite(NimBLECharacteristic* characteristic) {
+  std::string value = characteristic->getValue();
+  if (value.size() < 14) {
+    Serial.printf("[ble-direct] rejected short payload length %u\n", (unsigned)value.size());
+    return;
+  }
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(value.data());
+  uint8_t count = bytes[1];
+  uint16_t firstSeconds = (uint16_t)bytes[2] | ((uint16_t)bytes[3] << 8);
+  uint16_t totalSeconds = (uint16_t)bytes[4] | ((uint16_t)bytes[5] << 8);
+  if (bytes[0] != 1 || count < 1 || count > 22 || value.size() != (size_t)(6 + count * 8) ||
+      firstSeconds < 1 || firstSeconds > 30 || totalSeconds < 30 || totalSeconds > 600) {
+    Serial.println("[ble-direct] rejected malformed provisioning package");
+    return;
+  }
+  for (uint8_t codeIndex = 0; codeIndex < count; codeIndex++) {
+    memcpy(directCodes[codeIndex], bytes + 6 + codeIndex * 8, 8);
+  }
+  directCodeCount = count;
+  directCodeIndex = 0;
+  directActive = true;
+  directUntil = millis() + (uint32_t)totalSeconds * 1000UL;
+  directNextRotation = millis() + (uint32_t)firstSeconds * 1000UL;
+  publishCode(encodedCode(directCodes[0]));
+  Serial.printf("[ble-direct] %u rotating codes provisioned for %u seconds\n", (unsigned)count, (unsigned)totalSeconds);
 }
 
 /** Ask the server what to do. Returns false on any network/parse failure. */
@@ -223,27 +308,40 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.printf("\nAttenDesk beacon %s (firmware %s)\n", BEACON_CODE, FIRMWARE_VERSION);
+  startBle();
   connectWifi();
   configTime(0, 0, "pool.ntp.org", "time.google.com");
-  startBle();
   reportBoot();
   nextPollAt = millis();
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    // Never keep advertising a code we can no longer confirm is current.
+  while (directActive && directCodeIndex + 1 < directCodeCount && (int32_t)(millis() - directNextRotation) >= 0) {
+    directCodeIndex++;
+    publishCode(encodedCode(directCodes[directCodeIndex]));
+    directNextRotation += 30000UL;
+    Serial.printf("[ble-direct] rotated to code %u/%u\n", (unsigned)(directCodeIndex + 1), (unsigned)directCodeCount);
+  }
+  if (directActive && (int32_t)(millis() - directUntil) >= 0) {
+    directActive = false;
+    directCodeCount = 0;
     stopAdvertising();
+    Serial.println("[ble-direct] session expired");
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    // Wi-Fi mode fails closed. A directly provisioned token remains valid only
+    // until its local deadline and therefore survives a campus Wi-Fi outage.
+    if (!directActive && advertisingNow) stopAdvertising();
     connectWifi();
     delay(1000);
     return;
   }
-  if ((int32_t)(millis() - nextPollAt) >= 0) {
+  if (!directActive && (int32_t)(millis() - nextPollAt) >= 0) {
     bool ok = poll();
     if (!ok) stopAdvertising();
     nextPollAt = millis() + (ok ? pollInterval : IDLE_POLL_MS);
   }
   // A BLE connection stops advertising. Resume after it disconnects.
-  if (advertisingNow && !advertising->isAdvertising() && bleServer->getConnectedCount() == 0) advertising->start();
+  if (!advertising->isAdvertising() && bleServer->getConnectedCount() == 0) advertising->start();
   delay(50);
 }

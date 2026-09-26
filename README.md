@@ -18,9 +18,11 @@ The ESP32 does **not** broadcast a fixed room identifier. A fixed
 `ATTENDESK_ROOM_210` string would be trivial to clone — one student with a
 spare board could impersonate room 210 from their hostel.
 
-Instead the beacon polls the API every two seconds and is handed
+In Automatic Wi-Fi mode the beacon polls the API every two seconds and is handed
 `HMAC(server-secret, session-id + current-30-second-window)`, truncated to 8
-bytes. It advertises that and nothing else. It never learns a subject, a room
+bytes. In Direct Bluetooth mode the teacher browser preloads the same
+short-lived rotating codes over BLE, so the board needs no Wi-Fi during the
+attendance window. It advertises the current code and nothing else. It never learns a subject, a room
 roster or a student name. A code forwarded to somebody outside the room expires
 after the accepted current/previous time windows. It can still be relayed while
 valid; this is not cheat-proof proximity verification.

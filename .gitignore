@@ -11,4 +11,6 @@ server/data/
 .env
 *.dump
 *.dump.sha256
+*.jks
+*.keystore
 backups/

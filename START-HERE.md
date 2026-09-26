@@ -44,11 +44,11 @@ Students and teachers may still request their own accounts, but self-registratio
 
 ## 5. ESP32 classroom flow
 
-The teacher uses the WEBSITE to start attendance. No teacher phone beacon is required. Keep `REQUIRE_ESP32=true` (the default) so missing/offline ESP32s block opening a session.
+The teacher uses the WEBSITE to start attendance. No teacher phone beacon is required. Keep `REQUIRE_ESP32=true` (the default). Teachers can choose **Automatic Wi-Fi** for server polling or **Direct Bluetooth** when classroom Wi-Fi is unavailable; both modes require a registered ESP32 in the selected room.
 
 1. Register a room and provision its ESP32 in **Rooms & beacons**.
 2. Copy that device's code and one-time key privately into the firmware.
-3. Configure Wi-Fi, your actual HTTPS API URL, room label and the valid root CA PEM certificate. Firmware no longer disables TLS verification. Network time must be available for certificate checks.
+3. Configure Wi-Fi, your actual HTTPS API URL, room label and the valid root CA PEM certificate for Automatic Wi-Fi mode. Firmware no longer disables TLS verification. Direct Bluetooth remains available when that Wi-Fi connection is down.
 4. Compile the sketch using Arduino ESP32 core 3.x, NimBLE-Arduino 2.5.1 and ArduinoJson 7.x. Use a BLE-capable ESP32; ESP32-S2 has no BLE. The sketch is source-reviewed but has NOT been compiled or tested on hardware here.
 5. Power the board, inspect Serial at 115200 baud, and wait for **Online** in the website.
 6. Assign teacher/course/student enrollments. The teacher selects the room and timer on the website. Students use the native Android app to scan the ESP32 advertisements and then scan their registered ID barcode. Configure the Android build with the deployed HTTPS API URL before creating the APK.
@@ -57,7 +57,7 @@ The internal 30-second code is exchanged automatically over Bluetooth; nobody ty
 
 ## Verification and limits
 
-After updating an existing deployment, run `npm run migrate` again so migration `006_admin_workflows_and_appeals.sql` creates the appeals table and correction indexes. Then redeploy Vercel. The migration runner is idempotent and records checksums, so already-applied migrations are skipped.
+After updating an existing deployment, run `npm run migrate` again so migrations `006_admin_workflows_and_appeals.sql` and `007_dual_beacon_transport.sql` are applied. Then redeploy Vercel. The migration runner is idempotent and records checksums, so already-applied migrations are skipped.
 
 Run `npm test` from the root. Tests include simulated browser admin workflows, login interactions and API/security regression tests using stub databases. They do not prove real PostgreSQL migrations, deployed Vercel configuration, ESP32 compilation, physical BLE reception or 60 simultaneous students. Those require a staging database and physical pilot.
 

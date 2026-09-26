@@ -63,7 +63,7 @@ Also provide one redacted close-up photo of the printed barcode or confirm its s
 - One provisioned ESP32 beacon per test classroom and a teacher laptop/phone for the HTTPS website.
 - At least five representative Android student phone models with the native app and real test ID cards.
 - Two adjacent classrooms for cross-wall testing.
-- Reliable Wi-Fi/mobile data during the attendance window.
+- Teacher and student internet/mobile data during the attendance window. ESP32 Wi-Fi is optional when teachers use Direct Bluetooth mode.
 - A small pilot roster, named pilot owner, support contact and rollback procedure.
 
 ## Values that must be measured, not guessed
